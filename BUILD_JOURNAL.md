@@ -262,3 +262,64 @@ used constantly and score higher.
 
 Read gain, not split count, when asking what a model relies on. Left as-is with
 this note rather than silently swapping the metric.
+
+---
+
+## First end-to-end run on the held-out split
+
+37,398 records, temporal split, test frozen, models trained on train only.
+
+```
+posted              29,649   (79.3% straight-through)
+queued               2,895
+suspected grouped    4,854
+no candidate             0
+```
+
+| | |
+|---|---|
+| straight-through rate | **79.3%** |
+| **precision of auto-posted matches** | **99.2%** (29,426 / 29,649) |
+| grouped records routed to review | 87.3% (3,319 / 3,804) |
+| single records wrongly routed | **1,535** |
+| throughput | 524 rec/sec |
+| LLM calls on the matching path | **0** |
+| records unaccounted for | **0** |
+
+**Where this is weaker than it looks.**
+
+*223 auto-posted matches are wrong.* At 99.2% precision that is the residue, and
+it is not zero. Each one closes a real exception and writes a false claim into
+the ledger. Raising the gate's base threshold trades straight-through rate for
+precision; the curve has not been swept yet and should be, against cost rather
+than accuracy.
+
+*1,535 single-key records were wrongly sent to review* by the multiplicity
+detector at threshold 0.7. That is 4.1% of the batch doing unnecessary human
+work -- the false-positive cost of catching 87.3% of the grouped ones. The
+tradeoff is explicit and tunable, and reporting only the 87.3% would hide half
+of it.
+
+*Straight-through is below what vendors claim.* HighRadius publishes 95-98%
+auto-match. This run posts 79.3%. Some of that gap is real and some is
+definitional -- routing a grouped record to a human counts against us here and
+may not count against them -- but the honest comparison is the one that does not
+assume their favour.
+
+**Throughput: 524 rec/sec against a published commercial figure of 417/sec.**
+Only 1.26x, and blocking alone runs at 6,720/sec. The pipeline is a per-record
+Python loop doing featurisation and scoring one record at a time; vectorising it
+would move this a lot. Recorded now so the number is honest rather than
+flattering.
+
+**Review volume.** Without the system all 37,398 records need a human. With it,
+7,749 do -- a 79.3% reduction. That is the number a finance lead actually buys.
+
+## Keyword-only arguments caught a wrong call site
+
+`temporal_split(days, groups, 0.7, 0.1)` raised `TypeError` rather than silently
+interpreting the fractions as something else. The signature makes everything
+after `groups` keyword-only, deliberately, because `(0.7, 0.1)` and `(0.1, 0.7)`
+are both plausible-looking and only one is right.
+
+Cost: one failed run. Alternative: a split that looked fine and was 10/70.

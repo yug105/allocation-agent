@@ -23,7 +23,7 @@ t0 = time.perf_counter()
 ds = load_benchrec(pd.read_csv("data/benchrec_train.csv", dtype=str, low_memory=False))
 idx = KeyIndex(ds.key_rows); kstats = build_key_stats(ds.key_rows)
 kamts = {k: st.amounts for k, st in kstats.items()}
-sp = temporal_split([r.day for r in ds.records], ds.match_ids, 0.7, 0.1)
+sp = temporal_split([r.day for r in ds.records], ds.match_ids, train_frac=0.7, val_frac=0.1)
 print(f"loaded {ds.n_records:,} records / {idx.n_keys:,} keys in {time.perf_counter()-t0:.1f}s")
 print(f"split: {sp}\n")
 
