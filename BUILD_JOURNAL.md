@@ -102,3 +102,64 @@ a tradeoff to revisit once the ranker's cost per candidate is known.
 **Also worth noting:** parsing is 6.8s of the run, six times longer than the
 matching it feeds. It is a row-wise Python loop. Not optimised yet because it is
 a one-time cost per batch, but it is now the slowest stage.
+
+---
+
+## Several designed features do not exist in this data
+
+Measured field population before writing the feature extractor:
+
+| field | populated | consequence |
+|---|---|---|
+| `transactionReferences` | **0.0%** | no reference-overlap feature |
+| `orderingPartyInfo` | **0.0%** | **no counterparty names at all** |
+| `receivingPartyInfo` | **0.0%** | identity resolution is untestable here |
+| `currencyCode` | 100% | one distinct value: no signal |
+| `debitOrCredit` | 100% | one distinct value (`NONE`): no signal |
+| `transactionAttributes` | 100% | different vocabularies per side |
+
+Two design decisions die here. **Direction as a hard constraint** -- lifted from a
+published post-mortem where it prevented a whole class of false match -- has
+nothing to constrain, because every row says `NONE`. And the **five-layer identity
+resolver** has no names to resolve.
+
+Neither is wrong as a design. Both are simply unevaluable on this dataset, and
+that belongs in the limitations rather than in a quiet omission. Recording it
+here so the README says so too.
+
+---
+
+## TDD caught a unit confusion in the feature extractor
+
+`amount_delta_abs` is reported in major units; my test asserted minor. The test
+failed, the code was right. Added a second test pinning the unit explicitly, so
+the next person does not have to re-derive it from the divisor.
+
+Small, but it is the kind of thing that survives to production as a feature
+scaled 100x differently from its neighbours.
+
+---
+
+## First real ranker result
+
+Temporal split (70/10/20), group-respecting, test frozen.
+
+| | top-1 |
+|---|---|
+| trivial baseline (exact amount, tiebreak nearest date) | 90.63% |
+| **ranker** | **93.50%** |
+| blocking ceiling | 98.94% |
+
++2.87 pp over baseline; 5.44 pp of headroom remains.
+
+1.77M training pairs, 23s to train, 33,274 test records scored in 10.4s.
+
+**But the feature importances say the formulation is wrong.** The top two are
+`key_total_major` (23.3%) and `n_candidates` (21.5%), and `n_candidates` is
+*constant across every candidate of a given record*. It cannot discriminate
+within a record at all -- it can only act through interactions. A feature that
+cannot separate candidates taking a fifth of the model's attention means the
+binary-classification framing is leaking effort.
+
+The problem is a **ranking** problem: choose the best of N, not classify each pair
+independently. Next step is a LambdaRank objective with the record as the group.
