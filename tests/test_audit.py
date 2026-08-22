@@ -1,0 +1,179 @@
+"""The audit log.
+
+Not a report generated afterwards — it is what the run emits as it goes. An
+auditor asks three things: what was decided, why, and under which rules. All
+three must be answerable from the log alone, months later, without rerunning
+anything.
+
+Append-only. A row that can be edited after the fact is not evidence.
+"""
+
+import json
+
+import pytest
+
+from allocation_agent.decide.gate import GateConfig, Outcome, decide
+from allocation_agent.report.audit import AuditLog, ImmutableError, RunConfig
+
+
+@pytest.fixture()
+def log(tmp_path):
+    return AuditLog(tmp_path / "audit.db")
+
+
+def run_cfg(**kw) -> RunConfig:
+    base = dict(approved_by="yug", blocking={"date_slack_days": 7},
+                gate={"base": 0.85, "slope": 0.02}, policy_version="v0.1")
+    base.update(kw)
+    return RunConfig(**base)
+
+
+# --------------------------------------------------------------------------- #
+# a run must be authorised before it can record anything
+# --------------------------------------------------------------------------- #
+
+def test_recording_without_starting_a_run_is_refused(log):
+    d = decide(confidence=0.99, amount_minor=100, config=GateConfig())
+    with pytest.raises(RuntimeError, match="run"):
+        log.record("b1", d, keys=["K1"], n_candidates=3, path="ranked")
+
+
+def test_starting_a_run_returns_an_identifier(log):
+    run_id = log.start_run(run_cfg())
+    assert isinstance(run_id, str) and run_id
+
+
+def test_run_stores_who_approved_it_and_the_settings_they_approved(log):
+    run_id = log.start_run(run_cfg(approved_by="alice"))
+    meta = log.get_run(run_id)
+    assert meta["approved_by"] == "alice"
+    assert json.loads(meta["blocking"])["date_slack_days"] == 7
+
+
+def test_a_run_without_an_approver_is_refused(log):
+    """Settings approved by nobody is the failure mode the control exists for."""
+    with pytest.raises(ValueError, match="approved_by"):
+        log.start_run(run_cfg(approved_by=""))
+
+
+# --------------------------------------------------------------------------- #
+# what a decision row must carry
+# --------------------------------------------------------------------------- #
+
+def test_decision_is_retrievable_with_its_reasoning(log):
+    log.start_run(run_cfg())
+    d = decide(confidence=0.97, amount_minor=50_000, config=GateConfig())
+    log.record("b1", d, keys=["K1"], n_candidates=7, path="ranked")
+
+    (row,) = log.decisions()
+    assert row["record_id"] == "b1"
+    assert row["outcome"] == Outcome.POST.value
+    assert row["confidence"] == pytest.approx(0.97)
+    assert row["threshold_required"] == pytest.approx(d.threshold_required)
+    assert row["n_candidates"] == 7
+    assert row["path"] == "ranked"
+    assert row["reason"]
+
+
+def test_policy_version_is_recorded_on_every_row(log):
+    log.start_run(run_cfg(policy_version="v9.9"))
+    d = decide(confidence=0.99, amount_minor=100, config=GateConfig(policy_version="v9.9"))
+    log.record("b1", d, keys=["K"], n_candidates=1, path="direct")
+    assert log.decisions()[0]["policy_version"] == "v9.9"
+
+
+def test_several_keys_are_recorded_for_a_grouped_match(log):
+    log.start_run(run_cfg())
+    d = decide(confidence=0.9, amount_minor=1000, config=GateConfig())
+    log.record("b1", d, keys=["K1", "K2", "K3"], n_candidates=9, path="solved")
+    assert json.loads(log.decisions()[0]["chosen_keys"]) == ["K1", "K2", "K3"]
+
+
+def test_evidence_survives_the_round_trip(log):
+    log.start_run(run_cfg())
+    d = decide(confidence=0.9, amount_minor=1000, config=GateConfig())
+    ev = {"amount_delta": 0, "date_gap": 3, "runner_up_margin": 0.41}
+    log.record("b1", d, keys=["K"], n_candidates=2, path="ranked", evidence=ev)
+    assert json.loads(log.decisions()[0]["evidence"]) == ev
+
+
+def test_every_row_carries_a_timestamp(log):
+    log.start_run(run_cfg())
+    d = decide(confidence=0.9, amount_minor=1, config=GateConfig())
+    log.record("b1", d, keys=["K"], n_candidates=1, path="direct")
+    assert log.decisions()[0]["decided_at"]
+
+
+# --------------------------------------------------------------------------- #
+# append-only
+# --------------------------------------------------------------------------- #
+
+def test_a_recorded_decision_cannot_be_updated(log):
+    log.start_run(run_cfg())
+    d = decide(confidence=0.9, amount_minor=1, config=GateConfig())
+    log.record("b1", d, keys=["K"], n_candidates=1, path="ranked")
+    with pytest.raises(ImmutableError):
+        log.raw_execute("UPDATE decisions SET outcome = 'post' WHERE record_id = 'b1'")
+
+
+def test_a_recorded_decision_cannot_be_deleted(log):
+    log.start_run(run_cfg())
+    d = decide(confidence=0.9, amount_minor=1, config=GateConfig())
+    log.record("b1", d, keys=["K"], n_candidates=1, path="ranked")
+    with pytest.raises(ImmutableError):
+        log.raw_execute("DELETE FROM decisions WHERE record_id = 'b1'")
+
+
+def test_a_correction_is_a_new_row_not_an_edit(log):
+    """A reviewer overturning a decision must leave both visible."""
+    log.start_run(run_cfg())
+    d = decide(confidence=0.6, amount_minor=1_000_000, config=GateConfig())
+    log.record("b1", d, keys=["K1"], n_candidates=5, path="ranked")
+    log.record_correction("b1", corrected_keys=["K2"], reviewer="alice",
+                          note="settlement split across two batches")
+
+    rows = log.decisions()
+    assert len(rows) == 2
+    assert rows[0]["outcome"] == Outcome.QUEUE.value
+    assert rows[1]["path"] == "human"
+    assert rows[1]["reviewer"] == "alice"
+    assert json.loads(rows[1]["chosen_keys"]) == ["K2"]
+
+
+# --------------------------------------------------------------------------- #
+# the log is the source for every reported number
+# --------------------------------------------------------------------------- #
+
+def test_summary_counts_outcomes(log):
+    log.start_run(run_cfg())
+    for i, (conf, amt) in enumerate([(0.99, 100), (0.99, 100), (0.10, 10_000_000), (None, 500)]):
+        d = decide(confidence=conf, amount_minor=amt, config=GateConfig())
+        log.record(f"b{i}", d, keys=["K"], n_candidates=1, path="ranked")
+
+    s = log.summary()
+    assert s["post"] == 2
+    assert s["queue"] == 1
+    assert s["no_candidate"] == 1
+
+
+def test_summary_covers_only_the_current_run(log):
+    first = log.start_run(run_cfg())
+    d = decide(confidence=0.99, amount_minor=1, config=GateConfig())
+    log.record("b1", d, keys=["K"], n_candidates=1, path="ranked")
+    log.finish_run(first)
+
+    log.start_run(run_cfg())
+    log.record("b2", d, keys=["K"], n_candidates=1, path="ranked")
+    assert log.summary()["post"] == 1
+
+
+def test_reopening_the_database_preserves_history(tmp_path):
+    path = tmp_path / "audit.db"
+    a = AuditLog(path)
+    run_id = a.start_run(run_cfg())
+    d = decide(confidence=0.99, amount_minor=1, config=GateConfig())
+    a.record("b1", d, keys=["K"], n_candidates=1, path="ranked")
+    a.close()
+
+    b = AuditLog(path)
+    assert len(b.decisions(run_id=run_id)) == 1
