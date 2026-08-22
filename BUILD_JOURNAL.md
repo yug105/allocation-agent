@@ -323,3 +323,57 @@ after `groups` keyword-only, deliberately, because `(0.7, 0.1)` and `(0.1, 0.7)`
 are both plausible-looking and only one is right.
 
 Cost: one failed run. Alternative: a split that looked fine and was 10/70.
+
+---
+
+## The learning loop made the system WORSE. Recording it before fixing it.
+
+Three arms over the same 37,398 held-out records, cold start (3,000-record seed),
+autonomy measured per batch of 4,000:
+
+```
+learning on          81.9  81.3  81.4  79.0  77.2  77.3  79.4  73.3  72.0  79.0   (-2.93 pp)
+C-1 learning off     81.9  81.5  82.2  82.4  81.7  82.8  84.0  79.1  79.3  82.1   (+0.22 pp)
+C-3 placebo          81.9  81.8  80.4  78.0  79.8  78.7  72.3  61.0  57.1  59.1  (-22.82 pp)
+```
+
+C-2, three shuffled orderings: **-4.96, -7.31, -5.57**. Consistently negative.
+
+**Learning is 3.15 pp *worse* than not learning.** Not noise -- it reproduces
+under every ordering.
+
+**The placebo control passes**, and that is what makes the result trustworthy
+rather than a bug: feeding random corrections collapses autonomy by 22.8 pp, so
+the feedback path demonstrably works. It is working, and what it does is harmful.
+
+### Why
+
+Corrections are collected **only from records the gate refused**. Those are, by
+construction, the ambiguous ones -- the cases where the top two candidates scored
+close together. Refits therefore see a training set drifting steadily toward the
+hardest examples in the distribution.
+
+Confidence here is derived from the **margin** between the top two scores. Train
+on progressively more ambiguous cases and the model learns to separate them less
+sharply; margins compress; confidence falls; fewer records clear the gate. Lower
+autonomy is not a symptom of a worse model -- it is the direct arithmetic
+consequence of a less decisive one.
+
+So the loop is a negative feedback cycle: refuse the hard ones, train on the hard
+ones, become less decisive, refuse more.
+
+### What this says about the design
+
+The design said "corrections become labelled examples, upweighted, refit." That
+is wrong on its own, and wrong in a way that looks right on paper. **A system
+that only ever learns from its failures learns a biased view of the world.**
+
+The production analogue is exact and worth stating: queued records get reviewed
+so their truth becomes known; posted records are never reviewed, so theirs never
+does. The bias is not an artefact of the simulation. It is what the deployment
+would actually do.
+
+**Next: sample a fraction of auto-posted records for review as well**, which is
+what a finance function already does under the name spot-checking. If the
+diagnosis is right, restoring the easy cases to the training set should restore
+the curve. Testing that rather than assuming it.
