@@ -205,3 +205,60 @@ the candidate set, which is arbitrary.
 **Rule:** rank on raw scores, calibrate the winner afterwards. Calibration exists
 to make the gate's threshold meaningful, and the gate only ever sees one score
 per record. Applying it before selection buys nothing and quietly costs accuracy.
+
+---
+
+## Multiplicity detection — the 11.3% nobody automates
+
+21,549 of 190,717 records span several allocation keys. Every one carries
+`matchRule == MANUAL`: the institution's own engine automated **none** of them.
+
+**The design's prediction about the strongest signal was wrong.** It expected
+amount size (grouped payments being larger). Measured:
+
+| signal | MULT | single |
+|---|---|---|
+| **has an exact-amount candidate** | **10.9%** | **91.9%** |
+| blocked candidates (median) | 62 | 22 |
+| amount (median, minor) | 1,124,239 | 664,703 |
+| round to Rs 1,000 | 0.0% | 0.0% |
+
+Amount is a 1.7x separator. Exact-amount availability is near-categorical, and
+it follows from what a grouped payment *is*: a sum of several rows matches no
+single row. Round numbers were predicted to help and contribute nothing at all --
+recorded rather than quietly dropped.
+
+**Results, temporal split, test frozen:**
+
+| | precision | recall | F1 |
+|---|---|---|---|
+| baseline: no exact-amount match | 58.8% | 93.6% | 72.2% |
+| model @ 0.5 | 57.6% | 93.2% | 71.2% |
+| **model @ 0.7** | **68.4%** | **87.3%** | **76.7%** |
+| model @ 0.9 | 80.9% | 72.0% | 76.1% |
+
+PR-AUC 87.2% against a 10.2% positive rate.
+
+**At a fixed alert budget**, which is how a review queue actually works:
+
+| flag top | precision | recall |
+|---|---|---|
+| 5% (1,869 records) | **96.3%** | 47.3% |
+| 10% (3,739) | 77.4% | 76.1% |
+| 15% (5,609) | 62.1% | 91.6% |
+
+Note the model **loses to the baseline at threshold 0.5** (F1 71.2 vs 72.2). It
+only wins from 0.7 upward. Reporting the losing threshold too: a model that needs
+its operating point chosen carefully is a fact about the model, not a detail to
+omit.
+
+## Split-count importance is not predictive value
+
+`has_exact_amount_candidate` is the sharpest separator in the data and does not
+appear in the top five importances. That is not a contradiction -- LightGBM's
+default importance counts *splits*, and a feature that resolves most of the
+problem once at the root is used once. Features that carve up the residue are
+used constantly and score higher.
+
+Read gain, not split count, when asking what a model relies on. Left as-is with
+this note rather than silently swapping the metric.
