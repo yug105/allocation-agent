@@ -39,11 +39,23 @@ class BatchOutcome:
     n_records: int
     autonomous: int
     corrections: int
+    posted_correct: int = 0
     loci: dict[str, int] = field(default_factory=dict)
 
     @property
     def autonomy(self) -> float:
+        """Share posted without a human. **Gameable on its own** -- see precision."""
         return self.autonomous / self.n_records if self.n_records else 0.0
+
+    @property
+    def precision(self) -> float:
+        """Share of posted decisions that were right.
+
+        Autonomy measures decisiveness, not correctness: a model trained on easy,
+        well-separated examples produces wide margins and posts more whether or
+        not it is right. Rising autonomy with falling precision is a regression.
+        """
+        return self.posted_correct / self.autonomous if self.autonomous else 0.0
 
 
 @dataclass
@@ -68,9 +80,21 @@ class SimulationResult:
         """Percentage points gained from the first batch to the last."""
         return (self.last - self.first) * 100
 
+    @property
+    def precision_curve(self) -> list[float]:
+        return [b.precision for b in self.batches]
+
+    @property
+    def precision_change(self) -> float:
+        if not self.batches:
+            return 0.0
+        return (self.batches[-1].precision - self.batches[0].precision) * 100
+
     def __str__(self) -> str:
-        pts = "  ".join(f"{a * 100:5.1f}" for a in self.curve)
-        return f"{self.label:26} {pts}   ({self.improvement:+5.2f} pp)"
+        a = "  ".join(f"{x * 100:5.1f}" for x in self.curve)
+        p = "  ".join(f"{x * 100:5.1f}" for x in self.precision_curve)
+        return (f"{self.label:22} autonomy  {a}   ({self.improvement:+5.2f} pp)\n"
+                f"{'':22} precision {p}   ({self.precision_change:+5.2f} pp)")
 
 
 def simulate(
@@ -121,6 +145,7 @@ def simulate(
 
         corrections: list[tuple[int, str]] = []
         loci: dict[str, int] = {}
+        posted_correct = 0
 
         for row, d in zip(chunk, decisions):
             correct_keys, truly_multiple = truth(row)
@@ -134,12 +159,21 @@ def simulate(
                 routed_multiple=d["routed_multiple"],
                 truly_multiple=truly_multiple,
             )
+            if dg.locus is FailureLocus.NONE and d["posted"]:
+                posted_correct += 1
             if dg.locus is FailureLocus.NONE:
                 # Correct and posted. Learn from it only if this record was
                 # spot-checked, mirroring what a reviewer would actually see.
                 if (spot_check_rate > 0 and d["posted"] and correct_keys
                         and rng.random() < spot_check_rate):
-                    corrections.append((row, correct_keys[0]))
+                    key = correct_keys[0]
+                    if placebo and all_keys:
+                        # The control must corrupt *everything* fed back. An
+                        # earlier version corrupted only the corrections, so the
+                        # placebo arm still received genuine easy examples -- and
+                        # improved, which made the control useless.
+                        key = str(rng.choice(all_keys))
+                    corrections.append((row, key))
                 continue
             loci[dg.locus.value] = loci.get(dg.locus.value, 0) + 1
 
@@ -153,7 +187,8 @@ def simulate(
 
         result.batches.append(
             BatchOutcome(index=b, n_records=len(chunk), autonomous=autonomous,
-                         corrections=len(corrections), loci=loci)
+                         corrections=len(corrections), posted_correct=posted_correct,
+                         loci=loci)
         )
 
         if refit is not None and corrections:

@@ -422,3 +422,58 @@ Recording rather than dressing it up: the constraint that makes the layer safe
 worse than the hand-written templates it falls back to. On this evidence the
 template path is the better default, and the model is the optional upgrade --
 which inverts what the design assumed.
+
+---
+
+## The placebo control caught that my headline metric is gameable
+
+Ran the spot-check fix. The dose-response is exactly as the diagnosis predicted:
+
+```
+C-1 learning off     81.9 ... 82.1   (+0.22 pp)
+corrections only     81.9 ... 79.0   (-2.93 pp)   -3.15 vs C-1
++ spot-check 10%     81.9 ... 80.3   (-1.57 pp)   -1.79 vs C-1
++ spot-check 25%     81.9 ... 81.4   (-0.50 pp)   -0.72 vs C-1
+```
+
+Monotonic. Restoring easy cases to the training distribution reduces the harm in
+proportion to how many are restored. The mechanism was right.
+
+**But the placebo arm improved: +3.72 pp.** Feeding deliberately wrong keys made
+autonomy go *up*, and by more than any honest arm.
+
+Two things are true and both matter.
+
+### 1. The control itself is mis-specified
+
+`placebo` corrupts the keys taken from *corrections*, but the spot-check branch
+appends `correct_keys[0]` untouched. So the placebo arm receives garbage
+corrections **plus 25% genuine easy examples** -- and still improves. My control
+does not isolate what it claims to.
+
+That is a bug and it is being fixed: placebo must corrupt everything fed back.
+
+### 2. What the broken control accidentally proved is worse
+
+Garbage corrections plus easy examples beat *everything*, including honest
+corrections plus the same easy examples. Which means the corrections are not
+contributing positively at all. The gain is coming entirely from the easy
+examples -- and easy examples make the model **more decisive**, not more correct.
+
+Autonomy here is `posted / total`, and posting is gated on the margin between the
+top two scores. **A model trained on easy, well-separated examples produces wide
+margins, high confidence, and posts more -- whether or not it is right.**
+
+So the metric I have been reporting as "the learning curve" measures
+decisiveness, not correctness. It is gameable, and the placebo gamed it.
+
+### What this changes
+
+Autonomy alone is not a valid success measure for this loop. Every arm must
+report **precision of what it posts** alongside autonomy, and a rising autonomy
+curve with falling precision is a regression, not progress.
+
+This is precisely why the control exists. Had I reported the +25% spot-check arm
+as "the fix, -0.72 pp and closing", the number would have been real and the
+conclusion drawn from it wrong. An hour of control cost less than that would
+have.
