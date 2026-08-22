@@ -97,3 +97,29 @@ def test_empty_input_gives_an_empty_curve_not_an_error():
     d, r, _ = harness()
     res = simulate(label="x", indices=[], decide_batch=d, refit=r, truth=truth)
     assert res.curve == [] and res.improvement == 0.0
+
+
+def test_spot_checking_feeds_back_correct_decisions_too():
+    """The fix for the biased-feedback failure: without it the training set
+    drifts toward the ambiguous cases the gate refused."""
+    def always_right(chunk):
+        return [{"posted": True, "candidates": {"K_TRUE"}, "ranked": ["K_TRUE"],
+                 "routed_multiple": False} for _ in chunk]
+
+    seen = []
+    simulate(label="x", indices=list(range(200)), decide_batch=always_right,
+             refit=lambda c: seen.extend(c), truth=truth, batch_size=200,
+             spot_check_rate=0.5, rng=np.random.default_rng(0))
+    assert 60 < len(seen) < 140, "roughly half of correct decisions sampled"
+
+
+def test_no_spot_checking_means_correct_decisions_teach_nothing():
+    def always_right(chunk):
+        return [{"posted": True, "candidates": {"K_TRUE"}, "ranked": ["K_TRUE"],
+                 "routed_multiple": False} for _ in chunk]
+
+    seen = []
+    simulate(label="x", indices=list(range(200)), decide_batch=always_right,
+             refit=lambda c: seen.extend(c), truth=truth, batch_size=200,
+             spot_check_rate=0.0)
+    assert seen == []

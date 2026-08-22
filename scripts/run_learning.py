@@ -94,18 +94,23 @@ def truth(i): return ([ds.labels[i]], bool(ds.is_mult[i]))
 
 order = list(sp.test)
 results = []
-for label, learn, placebo in [("learning on", True, False),
-                              ("C-1 learning off", False, False),
-                              ("C-3 placebo", True, True)]:
+for label, learn, placebo, spot in [
+        ("C-1 learning off",        False, False, 0.0),
+        ("corrections only",         True, False, 0.0),
+        ("+ spot-check 10%",         True, False, 0.10),
+        ("+ spot-check 25%",         True, False, 0.25),
+        ("C-3 placebo",              True,  True, 0.25)]:
     t = time.perf_counter()
     model, refit, _ = make_arm(seed)
     res = simulate(label=label, indices=order, decide_batch=decide_factory(model),
                    refit=refit if learn else None, truth=truth,
-                   batch_size=BATCH, placebo=placebo, rng=np.random.default_rng(0))
+                   batch_size=BATCH, placebo=placebo, spot_check_rate=spot,
+                   rng=np.random.default_rng(0))
     results.append(res)
     print(f"{res}   [{time.perf_counter()-t:.0f}s]")
 
-print("\n=== C-2 shuffled order (learning on) ===")
+BEST_SPOT = 0.25
+print("\n=== C-2 shuffled order (best arm) ===")
 imps = []
 for s in range(3):
     rng = np.random.default_rng(s)
@@ -113,12 +118,14 @@ for s in range(3):
     model, refit, _ = make_arm(seed)
     r = simulate(label=f"  order seed {s}", indices=shuffled,
                  decide_batch=decide_factory(model), refit=refit, truth=truth,
-                 batch_size=BATCH, rng=rng)
+                 batch_size=BATCH, spot_check_rate=BEST_SPOT, rng=rng)
     imps.append(r.improvement); print(r)
 print(f"\n  improved under all {len(imps)} orderings: {all(i > 0 for i in imps)}")
 
 print("\n" + "="*72)
-learn, off, plac = results
-print(f"learning effect (C-1)  : {learn.improvement - off.improvement:+.2f} pp over the no-learning arm")
-print(f"placebo check (C-3)    : {plac.improvement:+.2f} pp  ->  "
+off, corr_only, spot10, spot25, plac = results
+print(f"corrections only vs C-1 : {corr_only.improvement - off.improvement:+.2f} pp")
+print(f"+ spot-check 10% vs C-1 : {spot10.improvement - off.improvement:+.2f} pp")
+print(f"+ spot-check 25% vs C-1 : {spot25.improvement - off.improvement:+.2f} pp")
+print(f"placebo check (C-3)     : {plac.improvement:+.2f} pp  ->  "
       f"{'BROKEN: nonsense also improves' if plac.improvement > 1.0 else 'passes: nonsense does not help'}")

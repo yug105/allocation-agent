@@ -82,6 +82,7 @@ def simulate(
     truth: Callable[[int], tuple[list[str], bool]],
     batch_size: int = 4_000,
     placebo: bool = False,
+    spot_check_rate: float = 0.0,
     rng: np.random.Generator | None = None,
 ) -> SimulationResult:
     """Run one arm of the experiment.
@@ -95,6 +96,16 @@ def simulate(
             genuinely grouped.
         placebo: corrupt every correction before feeding it back (control C-3).
             Autonomy must *not* improve.
+        spot_check_rate: fraction of *auto-posted* records also sent for review.
+
+            Without this the loop only ever learns from records the gate
+            refused, which are the ambiguous ones by construction. The training
+            set drifts toward the hard cases, the model separates them less
+            sharply, margins compress, confidence falls, and fewer records clear
+            the gate -- measured at -3.15 pp against not learning at all.
+
+            Sampling posted records restores the easy cases to the distribution.
+            A finance function already does this and calls it spot-checking.
     """
     rng = rng or np.random.default_rng(0)
     result = SimulationResult(label=label)
@@ -124,6 +135,11 @@ def simulate(
                 truly_multiple=truly_multiple,
             )
             if dg.locus is FailureLocus.NONE:
+                # Correct and posted. Learn from it only if this record was
+                # spot-checked, mirroring what a reviewer would actually see.
+                if (spot_check_rate > 0 and d["posted"] and correct_keys
+                        and rng.random() < spot_check_rate):
+                    corrections.append((row, correct_keys[0]))
                 continue
             loci[dg.locus.value] = loci.get(dg.locus.value, 0) + 1
 
