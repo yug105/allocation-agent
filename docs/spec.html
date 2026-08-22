@@ -1,0 +1,478 @@
+<title>Allocation Agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+
+<style>
+  :root {
+    --ground:#F3F5F4; --surface:#FFFFFF; --sunken:#E8ECEA;
+    --ink:#14201D; --ink-soft:#3B4945; --muted:#64726E;
+    --rule:#D9E0DD; --rule-firm:#B9C4C0;
+    --det:#0E5C4E; --det-bg:#E2EFEB;
+    --ml:#2A4C93;  --ml-bg:#E4EAF6;
+    --llm:#A4610A; --llm-bg:#FAEEDC;
+    --hum:#7A2E6B; --hum-bg:#F6E8F3;
+    --warn:#963020; --warn-bg:#F8E6E2;
+    --s--1:clamp(.79rem,.77rem + .1vw,.85rem);
+    --s-0:clamp(1rem,.97rem + .16vw,1.07rem);
+    --s-1:clamp(1.17rem,1.11rem + .3vw,1.35rem);
+    --s-2:clamp(1.45rem,1.32rem + .55vw,1.8rem);
+    --s-3:clamp(1.9rem,1.6rem + 1.3vw,2.8rem);
+    --s-4:clamp(2.4rem,1.85rem + 2.4vw,3.9rem);
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --ground:#0D1211; --surface:#151C1A; --sunken:#1D2624;
+    --ink:#E6ECEA; --ink-soft:#C0CBC7; --muted:#879490;
+    --rule:#253230; --rule-firm:#3A4A46;
+    --det:#4FC0A4; --det-bg:#123028;
+    --ml:#7FA5E8;  --ml-bg:#16233F;
+    --llm:#E9A94B; --llm-bg:#2E2211;
+    --hum:#D492C4; --hum-bg:#2B1728;
+    --warn:#E58472; --warn-bg:#331711;
+  }}
+  :root[data-theme="dark"]{
+    --ground:#0D1211; --surface:#151C1A; --sunken:#1D2624;
+    --ink:#E6ECEA; --ink-soft:#C0CBC7; --muted:#879490;
+    --rule:#253230; --rule-firm:#3A4A46;
+    --det:#4FC0A4; --det-bg:#123028;
+    --ml:#7FA5E8;  --ml-bg:#16233F;
+    --llm:#E9A94B; --llm-bg:#2E2211;
+    --hum:#D492C4; --hum-bg:#2B1728;
+    --warn:#E58472; --warn-bg:#331711;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);
+    font-family:"Source Serif 4",Georgia,serif;font-size:var(--s-0);line-height:1.65;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:58rem;margin:0 auto;padding:0 1.4rem 5rem}
+  .col{max-width:37rem}
+  h1,h2,h3{margin:0;line-height:1.14;text-wrap:balance;letter-spacing:-.02em;
+    font-family:"Archivo",ui-sans-serif,system-ui,sans-serif}
+  p{margin:0 0 1.05rem} .col>p:last-child{margin-bottom:0}
+  .mono,code{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.86em}
+  code{background:var(--sunken);padding:.1em .35em;border-radius:3px}
+  .tag{font-family:"JetBrains Mono",monospace;font-size:.68rem;letter-spacing:.1em;
+    text-transform:uppercase;font-weight:500;color:var(--muted)}
+
+  header.top{padding:clamp(2.8rem,7vw,5rem) 0 clamp(2rem,4vw,3rem);
+    border-bottom:1px solid var(--rule);display:flex;flex-direction:column;gap:1.4rem}
+  header.top h1{font-size:var(--s-4);font-weight:700;max-width:13ch}
+  .thesis{font-size:var(--s-1);color:var(--ink-soft);max-width:46ch;line-height:1.5}
+  .thesis b{color:var(--ink);font-weight:600}
+
+  section{padding-top:clamp(2.6rem,6vw,4rem)}
+  .head{display:flex;flex-direction:column;gap:.6rem;margin-bottom:1.5rem}
+  .head h2{font-size:var(--s-2);font-weight:600;max-width:30ch}
+  h3.sh{font-size:var(--s-1);font-weight:600;margin:2rem 0 .8rem;max-width:34ch}
+
+  .legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(12rem,1fr));gap:.85rem}
+  .key{border:1px solid var(--rule);border-radius:4px;padding:.85rem 1rem;background:var(--surface);
+    display:flex;flex-direction:column;gap:.25rem}
+  .key .sw{display:inline-flex;align-items:center;gap:.5rem;font-family:"Archivo",sans-serif;
+    font-weight:600;font-size:var(--s--1)}
+  .key .sw i{width:.72rem;height:.72rem;border-radius:2px;display:block;flex:none}
+  .key p{margin:0;font-size:var(--s--1);color:var(--ink-soft);line-height:1.45}
+  .k1 .sw i{background:var(--det)} .k1 .sw{color:var(--det)}
+  .k2 .sw i{background:var(--ml)}  .k2 .sw{color:var(--ml)}
+  .k3 .sw i{background:var(--llm)} .k3 .sw{color:var(--llm)}
+  .k4 .sw i{background:var(--hum)} .k4 .sw{color:var(--hum)}
+
+  .phase{margin-top:1.5rem}
+  .phase>.pl{font-family:"JetBrains Mono",monospace;font-size:.7rem;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--muted);font-weight:500;
+    display:flex;align-items:center;gap:.8rem;margin-bottom:.65rem}
+  .phase>.pl::after{content:"";flex:1;height:1px;background:var(--rule)}
+
+  .stage{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--rule-firm);
+    border-radius:4px;padding:1rem 1.2rem;margin-bottom:.55rem}
+  .stage.det{border-left-color:var(--det)} .stage.ml{border-left-color:var(--ml)}
+  .stage.llm{border-left-color:var(--llm)}
+  .stage.hum{border-left-color:var(--hum);background:var(--hum-bg);border-color:var(--hum)}
+  .stage h3{font-size:var(--s-0);font-weight:600;display:flex;flex-wrap:wrap;align-items:baseline;gap:.55rem}
+  .stage p{margin:.4rem 0 0;font-size:var(--s--1);color:var(--ink-soft);line-height:1.6}
+  .chip{font-family:"JetBrains Mono",monospace;font-size:.62rem;letter-spacing:.08em;
+    text-transform:uppercase;padding:.22em .55em;border-radius:3px;font-weight:500}
+  .chip.det{background:var(--det-bg);color:var(--det)} .chip.ml{background:var(--ml-bg);color:var(--ml)}
+  .chip.llm{background:var(--llm-bg);color:var(--llm)}
+  .chip.hum{background:var(--surface);color:var(--hum);border:1px solid var(--hum)}
+  .io{margin-top:.5rem;font-family:"JetBrains Mono",monospace;font-size:.73rem;
+    color:var(--muted);line-height:1.7;word-break:break-word}
+  .io b{color:var(--ink-soft);font-weight:500}
+  .why{margin-top:.45rem;font-size:var(--s--1);color:var(--ink-soft);
+    padding-left:.7rem;border-left:2px solid var(--rule-firm);font-style:italic}
+
+  .scroller{overflow-x:auto;margin:0 -1.4rem;padding:0 1.4rem}
+  table{width:100%;border-collapse:collapse;font-size:var(--s--1);min-width:29rem}
+  th{text-align:left;font-family:"JetBrains Mono",monospace;font-weight:500;font-size:.69rem;
+    letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+    padding:0 .9rem .6rem 0;border-bottom:1px solid var(--rule-firm);white-space:nowrap}
+  td{padding:.72rem .9rem .72rem 0;border-bottom:1px solid var(--rule);vertical-align:top;color:var(--ink-soft)}
+  td.k{color:var(--ink);font-weight:600;font-family:"Archivo",sans-serif}
+  td .mono{color:var(--ink)}
+
+  .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:1px;
+    background:var(--rule);border:1px solid var(--rule);border-radius:4px;overflow:hidden}
+  .fact{background:var(--surface);padding:1.05rem 1.1rem;display:flex;flex-direction:column;gap:.28rem}
+  .fact .f{font-family:"JetBrains Mono",monospace;font-size:var(--s-2);font-weight:600;line-height:1;
+    color:var(--ink);font-variant-numeric:tabular-nums}
+  .fact .l{font-family:"Archivo",sans-serif;font-weight:600;font-size:var(--s--1);color:var(--ink)}
+  .fact p{margin:0;font-size:.78rem;color:var(--muted);line-height:1.45}
+
+  .box{border:1px solid var(--det);background:var(--det-bg);border-radius:4px;
+    padding:1.3rem 1.45rem;display:flex;flex-direction:column;gap:.65rem}
+  .box.w{border-color:var(--warn);background:var(--warn-bg)}
+  .box.h{border-color:var(--hum);background:var(--hum-bg)}
+  .box h3{font-size:var(--s-1);font-weight:600}
+  .box p{margin:0;color:var(--ink-soft);max-width:58ch}
+  .box .q{font-family:"Source Serif 4",serif;font-style:italic;font-size:var(--s-1);
+    color:var(--ink);line-height:1.45}
+
+  .steps{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;
+    font-family:"JetBrains Mono",monospace;font-size:.74rem}
+  .steps span{background:var(--surface);border:1px solid var(--rule-firm);
+    padding:.35em .7em;border-radius:3px;color:var(--ink)}
+  .steps em{color:var(--hum);font-style:normal}
+
+  ul.plain{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:.68rem}
+  ul.plain li{font-size:var(--s--1);color:var(--ink-soft);line-height:1.6;padding-left:1.1rem;position:relative}
+  ul.plain li::before{content:"→";position:absolute;left:0;color:var(--muted);
+    font-family:"JetBrains Mono",monospace;font-size:.8em}
+  ul.plain li b{color:var(--ink);font-weight:600}
+  ol.num{margin:0;padding-left:1.3rem;display:flex;flex-direction:column;gap:.6rem}
+  ol.num li{font-size:var(--s--1);color:var(--ink-soft);line-height:1.6}
+  ol.num li b{color:var(--ink);font-weight:600}
+
+  pre.flow{background:var(--surface);border:1px solid var(--rule);border-radius:4px;
+    padding:1.1rem 1.2rem;overflow-x:auto;font-family:"JetBrains Mono",monospace;
+    font-size:.74rem;line-height:1.75;color:var(--ink-soft);margin:0}
+  pre.flow b{color:var(--ink);font-weight:600}
+
+  footer{margin-top:clamp(3rem,7vw,4.5rem);padding-top:1.5rem;border-top:1px solid var(--rule);
+    display:flex;flex-direction:column;gap:.5rem}
+  footer p{margin:0;font-size:var(--s--1);color:var(--muted);max-width:62rem}
+</style>
+
+<div class="wrap">
+
+  <header class="top">
+    <span class="tag">Reconciliation agent &middot; complete spec</span>
+    <h1>Allocation Agent</h1>
+    <p class="thesis">Money lands in a bank account. Somewhere in the books there is a record of what it was for. Connect them &mdash; and when one payment covers <b>several</b> records, notice that too. That last case is done entirely by hand today.</p>
+  </header>
+
+  <section>
+    <div class="head col">
+      <span class="tag">In one paragraph</span>
+      <h2>What the system does</h2>
+    </div>
+    <div class="col">
+      <p>Every ledger entry carries an <b>allocation key</b> &mdash; currency, date, account, attribute, joined into one string. For each bank record, the job is to name its key. Or to say it belongs to several.</p>
+      <p class="mono" style="background:var(--sunken);padding:.7rem .9rem;border-radius:4px;font-size:.8rem">USD_9/11/13_3446886485_600 cc AAB</p>
+      <p>Nine times in ten it is one key and a rules engine can find it. The tenth time it is several &mdash; and at a real bank, <b>every single one of those went to a person</b>. The agent predicts the answer, admits when it is unsure, asks, and remembers what it was told.</p>
+    </div>
+    <div class="facts" style="margin-top:1.4rem">
+      <div class="fact"><span class="f">190,717</span><span class="l">Bank records</span><p>Each needs a key. This is the unit of work.</p></div>
+      <div class="fact"><span class="f">103,191</span><span class="l">Possible keys</span><p>The answer space.</p></div>
+      <div class="fact"><span class="f">10.8%</span><span class="l">Span several keys</span><p>20,521 records. All resolved by hand.</p></div>
+      <div class="fact"><span class="f">0%</span><span class="l">Of those automated</span><p>The bank's own engine solved none of them.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="head col">
+      <span class="tag">The rule</span>
+      <h2>Four kinds of part, and none does another's job</h2>
+    </div>
+    <div class="legend">
+      <div class="key k1"><span class="sw"><i></i>Rules and solvers</span><p>Same input, same answer, every time. Everything that decides where money goes.</p></div>
+      <div class="key k2"><span class="sw"><i></i>Trained model</span><p>Learns from labelled history. Ranks and scores. Never commits anything.</p></div>
+      <div class="key k3"><span class="sw"><i></i>Language model</span><p>Messy text in, clean fields out. Explanations out. Never a decision.</p></div>
+      <div class="key k4"><span class="sw"><i></i>Person</span><p>Approves the settings before the run and the leftovers after it.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="head col">
+      <span class="tag">Part one</span>
+      <h2>What gets built before any matching starts</h2>
+    </div>
+    <div class="col">
+      <p>Data does not arrive as two tidy files. It arrives from spreadsheets, accounting systems, bank feeds, payment gateways. Each one gets an adapter that turns it into the same shape.</p>
+      <p>Then five things get built <b>once</b>, so that nothing has to be recalculated per record. This is the difference between a system that finishes in a minute and one that finishes in a day.</p>
+    </div>
+
+    <pre class="flow" style="margin-top:1.3rem">Excel · Sheets · accounting API · bank API · CSV
+        │
+        ├─ adapters  (one per source, exposed over MCP)
+        ▼
+<b>normalised record</b>  { source, side, key fields, amount, date, refs, raw text }
+        │
+        ▼
+  built once, read many:
+
+  <b>record store</b>    every record, columnar     → "all records for this account, this week"
+  <b>key index</b>       103,191 keys, hashed       → "which keys could this possibly be?"
+  <b>name index</b>      one vector per counterparty→ "who else is spelled like this?"
+  <b>history table</b>   one row per payer          → "what does this payer usually do?"
+  <b>pattern store</b>   past human corrections     → "have we been told this before?"</pre>
+
+    <div class="col" style="margin-top:1.2rem">
+      <p>The history table is the one people skip and then wonder why things are slow. You cannot work out &ldquo;this payer's usual deduction&rdquo; for every record &mdash; that is a scan through history each time. Work it out once for every payer, then it is a lookup.</p>
+      <p>Same with names: there are far fewer distinct counterparties than there are rows. Turn each one into a vector once.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="head col">
+      <span class="tag">Part two</span>
+      <h2>The run, start to finish</h2>
+    </div>
+
+    <div class="phase">
+      <div class="pl">Before anything executes</div>
+      <div class="stage hum">
+        <h3>A person approves the settings <span class="chip hum">Person</span></h3>
+        <p>How many days apart can a match be. How many rupees apart. Which fields must agree. What confidence is needed to post without review. Signed off first, and recorded with who, when, and which files.</p>
+        <div class="why">Someone approving results afterwards cannot tell whether a tolerance was loosened to make the numbers work. Approving the settings first is what makes the run defensible.</div>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="pl">For every bank record &mdash; all of this on the CPU</div>
+
+      <div class="stage det">
+        <h3>Step 1 &mdash; try the obvious thing <span class="chip det">Rules</span></h3>
+        <p>Is there a shared identifier that matches exactly? Then done.</p>
+        <div class="why">Cheapest first. Clears the easy volume before anything expensive runs.</div>
+      </div>
+
+      <div class="stage det">
+        <h3>Step 2 &mdash; narrow the field <span class="chip det">Rules</span></h3>
+        <p>Same account, then a date window, then a sensible amount range.</p>
+        <div class="io"><b>before</b> 190,717 &times; 103,191 = 19.7 billion pairs<br><b>after</b> &nbsp;about 6 million</div>
+        <div class="why">A 3,400-fold cut, and it dominates every other speed-up in the system combined. If the right answer does not survive this step, nothing later can recover it &mdash; which is why the first thing to measure is whether it does.</div>
+      </div>
+
+      <div class="stage ml">
+        <h3>Step 3 &mdash; score what is left <span class="chip ml">Trained model</span></h3>
+        <p>Gradient boosting scores each surviving candidate. The features are unglamorous and effective: how close the amounts are, how far apart the dates, whether the account agrees, how much the reference overlaps, how similar the names are, and what this payer has done before.</p>
+        <div class="io"><b>out</b> a ranked list, each with a probability that means something</div>
+        <div class="why">There are 169,168 labelled examples sitting in the data. That is supervised learning. A language model here would be slower, cost more, and be worse at comparing numbers.</div>
+      </div>
+
+      <div class="stage ml">
+        <h3>Step 4 &mdash; does this belong to several? <span class="chip ml">Trained model</span></h3>
+        <p>A separate classifier answering one question. There is a real signal: records that span several keys are about twice the size of ones that do not. The top candidate scoring weakly, or several candidates scoring nearly the same, points the same way.</p>
+        <div class="why">This is the decision that consumes every human hour today, and no product on the market attempts it. It also gates the expensive step below, so that step only runs where it is needed.</div>
+      </div>
+
+      <div class="stage det">
+        <h3>Step 5 &mdash; find the combination <span class="chip det">Solver</span></h3>
+        <p>Only for records flagged in step 4. Which set of keys adds up to this amount, within tolerance? Dynamic programming over a shortlist of tens.</p>
+        <div class="io"><b>out</b> a set of keys &mdash; or <em>no combination works</em>, which becomes an exception</div>
+        <div class="why">Twenty candidates means a million possible combinations. That is arithmetic, not language. It runs on roughly one record in ten, which is what keeps it affordable.</div>
+      </div>
+
+      <div class="stage det">
+        <h3>Step 6 &mdash; decide, or don't <span class="chip det">Rules</span></h3>
+        <p>The confidence needed to post without a human rises with the amount involved.</p>
+        <div class="io">small amount &rarr; post at <b>85%</b> &nbsp;&middot;&nbsp; large amount &rarr; <b>99%</b> or a person looks</div>
+        <div class="why">Every product uses one threshold for every amount. A wrong match closes a real problem and writes into the books that two unrelated things are the same event. A missed match just costs someone ten minutes. Those are not equal, so the bar should not be.</div>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="pl">For leftovers only &mdash; off the fast path</div>
+      <div class="stage llm">
+        <h3>Step 7 &mdash; work out what the gap is <span class="chip det">Arithmetic first</span> <span class="chip llm">then words</span></h3>
+        <p>Where a match nearly works, calculate what each possible cause would predict, and rank by which fits.</p>
+        <div class="io"><b>bank charge</b> &rarr; gap matches this payer's usual rate<br><b>rounding</b> &rarr; gap is under half a paisa per line<br><b>currency</b> &rarr; gap matches a rate difference<br><b>part payment</b> &rarr; gap is exactly one whole line</div>
+        <div class="why">The diagnosis is calculated, not guessed. Only then does the language model write the sentence &mdash; and it may only mention figures the engine produced. It cannot introduce one. That is the difference between an explanation and something that merely sounds right.</div>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="pl">The loop</div>
+      <div class="stage hum">
+        <h3>Step 8 &mdash; a person resolves it, and the system remembers <span class="chip hum">Person</span> <span class="chip det">then stored</span></h3>
+        <p>Everything the gate refused goes to a queue, with the evidence and the agent's proposal. The reviewer fixes it. <em>The fix is written to the pattern store</em>, filed under the situation that produced it.</p>
+        <div class="io"><b>next run</b> the same situation is handled without asking</div>
+        <div class="why">This is what makes it an agent rather than a batch job. Without it, the system behaves identically on run fifty as on run one &mdash; which is worse than the products it is competing with, all of which carry memory.</div>
+      </div>
+    </div>
+
+    <div class="phase">
+      <div class="pl">Account for everything</div>
+      <div class="stage det">
+        <h3>Step 9 &mdash; report and lock <span class="chip det">Rules</span></h3>
+        <p>Matched, unmatched on each side, duplicates, low confidence, proposed entries. Nothing is quietly dropped &mdash; every record appears somewhere. Workbook, the evidence behind each decision, and the review thread are locked together.</p>
+        <div class="why">The audit trail is what the run produces as it goes, not a report assembled afterwards.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="box h">
+      <h3>The loop is the point</h3>
+      <div class="steps">
+        <span>agent proposes</span><em>&rarr;</em><span>gate refuses some</span><em>&rarr;</em><span>person resolves</span><em>&rarr;</em><span>pattern stored</span><em>&rarr;</em><span>handled alone next time</span>
+      </div>
+      <p>A fixed matcher scores what it scores, forever. An agent that writes its corrections back gets measurably better each run and the queue shrinks. That trajectory is the thing worth showing, and it cannot be faked, because it only appears if the feedback path genuinely works.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="head col">
+      <span class="tag">Part three</span>
+      <h2>How it runs</h2>
+    </div>
+    <div class="col">
+      <p>Two studies published in 2026 &mdash; one from Intel and Georgia Tech, one from Microsoft Azure's production fleet &mdash; found the same thing: in agent systems, the tools running on the processor account for most of the time, up to 88% of it. Not the model. This system sits deliberately at that extreme.</p>
+    </div>
+    <ul class="plain col" style="margin-top:1.2rem">
+      <li><b>No graphics card.</b> Everything on the fast path is ordinary processor work. It runs on a laptop.</li>
+      <li><b>Two pools of workers, not one.</b> Compute work &mdash; narrowing, scoring, solving &mdash; pinned to real cores. Language model calls sit in a separate pool because they are waiting on the network, not working. Mixing them loses cache locality on both.</li>
+      <li><b>Do not use more processes than cores.</b> Memory bandwidth runs out around four processes per socket; past that the operating system spends its time switching between them.</li>
+      <li><b>Overlap the batches.</b> While one batch is waiting on the language model, the next should already be narrowing. Neither pool should ever sit idle.</li>
+      <li><b>Keep the language model off the fast path entirely.</b> Repeated descriptions parsed once and reused. Explanations batched twenty at a time. Fixed instructions placed first in the prompt so they cache; the record-specific part last.</li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="head col">
+      <span class="tag">Part four</span>
+      <h2>How we know whether it works</h2>
+    </div>
+    <div class="col">
+      <p>The labels are real. They came from actual analysts at a real bank reconciling actual money. Nobody made them up, and the data even records which ones their own software solved and which needed a person. That means there is a production baseline that was not created by us.</p>
+    </div>
+
+    <h3 class="sh">First: do not accidentally cheat</h3>
+    <div class="col">
+      <p>Four columns will silently hand over the answer. Remove them before anything else.</p>
+    </div>
+    <div class="scroller" style="margin-top:1rem">
+      <table>
+        <thead><tr><th>Remove</th><th>Because</th></tr></thead>
+        <tbody>
+          <tr><td class="k">The generator's own key</td><td>It is the answer, written a different way. Leaving it in gives near-perfect accuracy that means nothing.</td></tr>
+          <tr><td class="k">How it was matched</td><td>Only known after the fact.</td></tr>
+          <tr><td class="k">Who matched it</td><td>Same &mdash; an outcome, not an input.</td></tr>
+          <tr><td class="k">The date it was reconciled</td><td>Not the date of the transaction. A different thing entirely.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="col" style="margin-top:1rem">
+      <p>And never let one match end up split across training and testing. Group by the match, always.</p>
+    </div>
+
+    <h3 class="sh">Second: split by time, not at random</h3>
+    <div class="col">
+      <p>Train on the earliest records, test on the latest. This matters far more than it sounds. On a well-known fraud dataset, moving from a random split to a forward-in-time split dropped the headline score from <b>0.925 to 0.537</b> &mdash; same model, same data. The random split was simply lying.</p>
+      <p>Ours will drop too. Report the honest number. Then freeze the test set and do not look at it again until the end.</p>
+    </div>
+
+    <h3 class="sh">Third: four baselines, not one</h3>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Compare against</th><th>What it establishes</th></tr></thead>
+        <tbody>
+          <tr><td class="k">Random pick</td><td>The floor. Anything must beat this.</td></tr>
+          <tr><td class="k">Exact identifier only</td><td>What matching on shared references alone achieves.</td></tr>
+          <tr><td class="k">Fuzzy text matching</td><td>The classic approach, and a serious bar &mdash; a 2012 method using information theory reached near-perfect precision on its own data.</td></tr>
+          <tr><td class="k">The bank's own engine</td><td>The data records which matches their software solved. <b>This is the number to beat</b> &mdash; and on the grouped cases it is zero.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="sh">Fourth: measure each part separately</h3>
+    <ul class="plain col">
+      <li><b>Narrowing.</b> Did the right answer survive? Measure this first. If narrowing throws the answer away, every number after it is capped and the model cannot be blamed.</li>
+      <li><b>Ranking.</b> How often is the top guess right, and how often is it in the top five. Split by whether the case was simple or grouped, because those are different problems.</li>
+      <li><b>Spotting the grouped cases.</b> Of the ones flagged, how many really were &mdash; and of the real ones, how many were caught. Report at a fixed alert budget, the way fraud teams do: catching twice as many by flagging three times as much has destroyed value, not created it.</li>
+      <li><b>Confidence honesty.</b> When it says ninety percent, is it right nine times in ten? Draw the chart. This is what makes the auto-post threshold safe, and it is one of the three things the benchmark itself measures.</li>
+      <li><b>Cost, not count.</b> Weight mistakes by the money involved. One wrong five-lakh match is not one error.</li>
+      <li><b>Speed.</b> Records per second, against a commercial system's published 417 per second. Report the middle and the slow tail separately, and separately for each kind of case.</li>
+    </ul>
+
+    <h3 class="sh">Fifth: prove the learning is real</h3>
+    <div class="col">
+      <p>Run the test set in order. Whenever the gate refuses, reveal the true answer &mdash; standing in for a person &mdash; write it to the pattern store, and carry on. Measure how much is handled alone in each successive batch.</p>
+      <p>That number will go up. The question is whether it went up because the system learned, or for some duller reason. Three checks, all necessary:</p>
+    </div>
+    <ol class="num col" style="margin-top:1rem">
+      <li><b>Turn the memory off and run the same sequence.</b> The gap between the two curves is the learning. Without this you have only shown that later batches happened to be easier.</li>
+      <li><b>Shuffle the order and repeat.</b> If it improves under every ordering, it is real. If it depends on a lucky one, it is not.</li>
+      <li><b>Feed it nonsense.</b> Write random corrections into the pattern store instead of true ones. <b>If it still improves, the measurement is broken</b> and you have found that out for the price of an hour.</li>
+    </ol>
+    <div class="col" style="margin-top:1rem">
+      <p>Publishing a negative control that passes is close to unanswerable. It shows you understand that your own measurement can lie to you, which is a higher-order claim than any accuracy figure.</p>
+    </div>
+
+    <h3 class="sh">Sixth: does each part earn its place</h3>
+    <div class="col">
+      <p>Switch one thing off at a time and report what changes. No payer history. No grouped-case detector. No name index. No memory. And &mdash; on a small sample &mdash; a language model doing the ranking instead of the trained one, which gives the cost-against-accuracy curve.</p>
+      <p>That last comparison is the honest answer to where a language model belongs and where it does not. A measurement, not an opinion.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="box w">
+      <h3>The exception list is a deliverable, not an admission</h3>
+      <p>Group everything the system could not resolve by cause, count each group, and say what it would take to fix. Commercial vendors publish match rates of 95 to 98 percent. <b>None of them publish the other two to five percent or why.</b> Doing so is the difference between a demo and a piece of engineering.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="head col">
+      <span class="tag">Part five</span>
+      <h2>What gets reported at the end</h2>
+    </div>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Number</th><th>Question it answers</th></tr></thead>
+        <tbody>
+          <tr><td class="k">Autonomy across runs</td><td>Share handled without a person, run one through run ten. A flat line means the learning does not work &mdash; and we would say so.</td></tr>
+          <tr><td class="k">Top guess accuracy</td><td>The core prediction, scored plainly, against four baselines.</td></tr>
+          <tr><td class="k">Grouped-case detection</td><td>The tenth of records that nobody automates. The number to lead with.</td></tr>
+          <tr><td class="k">Confidence honesty</td><td>Whether the probabilities mean what they say.</td></tr>
+          <tr><td class="k">Records per second</td><td>Against a published commercial figure. On a laptop, no graphics card.</td></tr>
+          <tr><td class="k">Cost per run</td><td>Rupees. Near zero on the matching path, because there are no model calls there.</td></tr>
+          <tr><td class="k">Exception list</td><td>What it could not do, grouped by why.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="box">
+      <h3>The rule underneath all of it</h3>
+      <p class="q">The model ranks. The engine decides. The person commits. The correction is remembered.</p>
+      <p>A match is a binding claim about money. It has to be explainable to whoever signs the accounts, identical when re-run, defensible to an auditor, and tuned for the fact that a wrong match costs far more than a missed one. Models are weak on all four, so they sit either side of the decision and never inside it. The last clause is what stops the system being the same on its fiftieth run as its first.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="head col">
+      <span class="tag">Part six</span>
+      <h2>The order to build it</h2>
+    </div>
+    <ol class="num col">
+      <li><b>Remove the leaking columns and check the split.</b> Ten minutes, and it protects every number that comes after.</li>
+      <li><b>Narrowing, and measure whether the answer survives it.</b> If it does not, stop and fix that before building anything else. Two hours.</li>
+      <li><b>Baselines, then the ranker.</b> Report the top-guess accuracy against all four. This is the spine &mdash; if it does not work, nothing else matters.</li>
+      <li><b>The grouped-case detector.</b> The differentiating number, and the size signal is a real head start.</li>
+      <li><b>The gate and the audit log.</b> A few lines each, and they shape everything downstream. Do not add them later.</li>
+      <li><b>The memory and its three controls.</b> Then run repeatedly and plot the curve. This is what turns a matcher into an agent.</li>
+      <li><b>The combination solver.</b> Only reachable once the detector works, and only worth running on what it flags.</li>
+      <li><b>Adapters, connectors, explanations, dashboard.</b> These matter for showing it working and not at all for the result. Last.</li>
+    </ol>
+  </section>
+
+  <footer>
+    <span class="tag">Notes</span>
+    <p>All counts measured directly from a public benchmark of obfuscated ledger and bank records released from a Tier-1 financial institution's production reconciliation. The allocation key reconstructs exactly from four ledger fields in every sampled row.</p>
+    <p>The three-layer matching order and the approve-settings-first control follow standard reconciliation practice. The combination solver follows work published by J.P. Morgan AI Research at ECAI 2025, which proves the problem hard and finds dynamic programming beats both integer programming and tree search at these sizes. The execution findings come from two 2026 architectural studies, one from Intel and Georgia Tech, one from Microsoft Azure's production fleet.</p>
+  </footer>
+
+</div>

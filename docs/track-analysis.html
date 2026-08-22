@@ -1,0 +1,699 @@
+<title>Grading Your Own Homework</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;0,700;1,400&display=swap">
+
+<style>
+  :root {
+    --ground:      #F5F7F9;
+    --surface:     #FFFFFF;
+    --surface-alt: #EDF0F4;
+    --ink:         #12161C;
+    --ink-soft:    #39424F;
+    --muted:       #5A6472;
+    --rule:        #DDE3EA;
+    --rule-strong: #C3CCD7;
+    --accent:      #9C5D00;
+    --accent-soft: #FBF0DC;
+    --strong:      #1F6B4C;
+    --weak:        #9A3A29;
+    --shadow:      0 1px 2px rgba(18,22,28,.05), 0 8px 24px -12px rgba(18,22,28,.16);
+
+    --step--1: clamp(.78rem, .76rem + .1vw, .84rem);
+    --step-0:  clamp(1rem, .97rem + .16vw, 1.075rem);
+    --step-1:  clamp(1.2rem, 1.13rem + .32vw, 1.4rem);
+    --step-2:  clamp(1.5rem, 1.36rem + .6vw, 1.9rem);
+    --step-3:  clamp(2rem, 1.7rem + 1.3vw, 2.9rem);
+    --step-4:  clamp(2.6rem, 2rem + 2.6vw, 4.2rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0E1116;
+      --surface:     #161B22;
+      --surface-alt: #1D2430;
+      --ink:         #E7EBF1;
+      --ink-soft:    #C2CAD6;
+      --muted:       #8A94A4;
+      --rule:        #262E3A;
+      --rule-strong: #3A4553;
+      --accent:      #E8A33D;
+      --accent-soft: #2A2114;
+      --strong:      #4FB98B;
+      --weak:        #E08268;
+      --shadow:      0 1px 2px rgba(0,0,0,.4), 0 10px 28px -14px rgba(0,0,0,.7);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #0E1116;
+    --surface:     #161B22;
+    --surface-alt: #1D2430;
+    --ink:         #E7EBF1;
+    --ink-soft:    #C2CAD6;
+    --muted:       #8A94A4;
+    --rule:        #262E3A;
+    --rule-strong: #3A4553;
+    --accent:      #E8A33D;
+    --accent-soft: #2A2114;
+    --strong:      #4FB98B;
+    --weak:        #E08268;
+    --shadow:      0 1px 2px rgba(0,0,0,.4), 0 10px 28px -14px rgba(0,0,0,.7);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: var(--step-0);
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 60rem;
+    margin: 0 auto;
+    padding: 0 1.5rem 6rem;
+  }
+
+  .col { max-width: 38rem; }
+
+  h1, h2, h3 {
+    font-family: "IBM Plex Serif", ui-serif, Georgia, serif;
+    text-wrap: balance;
+    line-height: 1.15;
+    margin: 0;
+  }
+
+  .label {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: var(--step--1);
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+  }
+
+  /* ---------- masthead ---------- */
+
+  header.masthead {
+    border-bottom: 1px solid var(--rule);
+    padding: clamp(3rem, 8vw, 5.5rem) 0 clamp(2.5rem, 5vw, 3.5rem);
+    display: flex;
+    flex-direction: column;
+    gap: 1.75rem;
+  }
+
+  .masthead h1 {
+    font-size: var(--step-4);
+    font-weight: 700;
+    letter-spacing: -.02em;
+    max-width: 16ch;
+  }
+
+  .standfirst {
+    font-size: var(--step-1);
+    color: var(--ink-soft);
+    max-width: 46ch;
+    line-height: 1.5;
+  }
+
+  .standfirst em {
+    font-family: "IBM Plex Serif", serif;
+    color: var(--accent);
+    font-style: italic;
+  }
+
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .6rem 1.75rem;
+    padding-top: .5rem;
+    border-top: 1px solid var(--rule);
+  }
+
+  .meta-row div { display: flex; gap: .5rem; align-items: baseline; }
+  .meta-row .v {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: var(--step--1);
+    color: var(--ink);
+    font-weight: 500;
+  }
+
+  /* ---------- sections ---------- */
+
+  section { padding-top: clamp(3rem, 7vw, 4.5rem); }
+
+  .sec-head {
+    display: flex;
+    flex-direction: column;
+    gap: .75rem;
+    margin-bottom: 1.75rem;
+  }
+
+  .sec-head h2 {
+    font-size: var(--step-2);
+    font-weight: 600;
+    letter-spacing: -.015em;
+    max-width: 24ch;
+  }
+
+  p { margin: 0 0 1.15rem; }
+  section p:last-child { margin-bottom: 0; }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: .18em; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+  code, .mono {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .88em;
+  }
+
+  code {
+    background: var(--surface-alt);
+    padding: .12em .38em;
+    border-radius: 3px;
+  }
+
+  strong { font-weight: 600; color: var(--ink); }
+
+  /* ---------- escape routes ---------- */
+
+  .escapes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .escape {
+    background: var(--surface);
+    padding: 1.4rem 1.35rem;
+    display: flex;
+    flex-direction: column;
+    gap: .6rem;
+  }
+
+  .escape h3 {
+    font-size: var(--step-0);
+    font-weight: 600;
+    font-family: "IBM Plex Sans", sans-serif;
+  }
+
+  .escape p { margin: 0; font-size: var(--step--1); color: var(--ink-soft); line-height: 1.55; }
+
+  .escape .tag {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .7rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  /* ---------- ranking table ---------- */
+
+  .scroller { overflow-x: auto; margin: 0 -1.5rem; padding: 0 1.5rem; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--step--1);
+    min-width: 34rem;
+  }
+
+  th {
+    text-align: left;
+    font-family: "IBM Plex Mono", monospace;
+    font-weight: 500;
+    font-size: .72rem;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 0 1rem .7rem 0;
+    border-bottom: 1px solid var(--rule-strong);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: .85rem 1rem .85rem 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+    color: var(--ink-soft);
+  }
+
+  td:first-child, th:first-child { padding-left: 0; }
+  td.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; color: var(--ink); }
+  td.track { color: var(--ink); font-weight: 600; white-space: nowrap; }
+
+  /* ---------- verdict cards ---------- */
+
+  .cards { display: flex; flex-direction: column; gap: 1.25rem; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .card-head {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface-alt);
+    flex-wrap: wrap;
+  }
+
+  .rank {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: var(--step-2);
+    font-weight: 600;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  .card-head h3 {
+    font-size: var(--step-1);
+    font-weight: 600;
+    flex: 1 1 12rem;
+  }
+
+  .pill {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .7rem;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    padding: .3em .7em;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+  }
+
+  .pill.ok   { color: var(--strong); }
+  .pill.mid  { color: var(--accent); }
+  .pill.bad  { color: var(--weak); }
+
+  .card-body { padding: 1.4rem 1.5rem; display: flex; flex-direction: column; gap: 1.1rem; }
+  .card-body p { margin: 0; max-width: 62ch; }
+
+  .datum {
+    display: flex;
+    flex-direction: column;
+    gap: .3rem;
+    padding: .9rem 1.1rem;
+    background: var(--accent-soft);
+    border-left: 2px solid var(--accent);
+    border-radius: 0 3px 3px 0;
+  }
+
+  .datum .figure {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: var(--step-1);
+    font-weight: 600;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+  }
+
+  .datum .cap { font-size: var(--step--1); color: var(--ink-soft); line-height: 1.5; }
+
+  .verdict {
+    font-family: "IBM Plex Serif", serif;
+    font-style: italic;
+    font-size: var(--step-0);
+    color: var(--ink);
+    padding-top: 1rem;
+    border-top: 1px solid var(--rule);
+  }
+
+  /* ---------- layer stack ---------- */
+
+  .layers { display: flex; flex-direction: column; gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
+
+  .layer {
+    background: var(--surface);
+    padding: 1.4rem 1.5rem;
+    display: grid;
+    grid-template-columns: 7.5rem 1fr;
+    gap: .4rem 1.5rem;
+    align-items: start;
+  }
+
+  @media (max-width: 34rem) { .layer { grid-template-columns: 1fr; } }
+
+  .layer .lname {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: var(--step--1);
+    font-weight: 500;
+    color: var(--accent);
+    letter-spacing: .02em;
+  }
+
+  .layer h3 { font-size: var(--step-0); font-family: "IBM Plex Sans", sans-serif; font-weight: 600; }
+  .layer p { margin: .45rem 0 0; font-size: var(--step--1); color: var(--ink-soft); line-height: 1.6; max-width: 60ch; }
+  .layer .spans { grid-column: 2; }
+  @media (max-width: 34rem) { .layer .spans { grid-column: 1; } }
+
+  /* ---------- llm split ---------- */
+
+  .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1.25rem; }
+
+  .split-col {
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--surface);
+    padding: 1.35rem 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .split-col > .label { padding-bottom: .75rem; border-bottom: 1px solid var(--rule); }
+  .split-col ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .95rem; }
+  .split-col li { font-size: var(--step--1); line-height: 1.55; color: var(--ink-soft); }
+  .split-col li b { display: block; color: var(--ink); font-weight: 600; font-size: var(--step-0); margin-bottom: .12rem; }
+
+  /* ---------- callout ---------- */
+
+  .callout {
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    background: var(--accent-soft);
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: .8rem;
+  }
+
+  .callout h3 { font-size: var(--step-1); font-weight: 600; }
+  .callout p { margin: 0; max-width: 60ch; color: var(--ink-soft); }
+
+  /* ---------- footer ---------- */
+
+  footer {
+    margin-top: clamp(3.5rem, 8vw, 5.5rem);
+    padding-top: 1.75rem;
+    border-top: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+    gap: .55rem;
+  }
+
+  footer ol { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: .5rem; }
+  footer li { font-size: var(--step--1); color: var(--muted); line-height: 1.5; }
+  footer li a { color: var(--ink-soft); }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <span class="label">Razorpay Buildathon &middot; Track selection brief</span>
+    <h1>Grading Your Own Homework</h1>
+    <p class="standfirst">Building the thing is the easy half. The hard half is producing a number a judge can't dismiss &mdash; and only one track hands you <em>somebody else's randomised experiment</em> to prove it with.</p>
+    <div class="meta-row">
+      <div><span class="label">Window</span><span class="v">7 days</span></div>
+      <div><span class="label">Tracks assessed</span><span class="v">01&ndash;04</span></div>
+      <div><span class="label">Ranked on</span><span class="v">Evaluation validity</span></div>
+      <div><span class="label">Recommendation</span><span class="v">Track 03</span></div>
+    </div>
+  </header>
+
+  <section>
+    <div class="sec-head col">
+      <span class="label">The actual bar</span>
+      <h2>Every track's brief is a measurement demand in disguise</h2>
+    </div>
+    <div class="col">
+      <p>Read the four bars back to back. &ldquo;Measured precision and recall on a held-out test set.&rdquo; &ldquo;Honest metrics including false-positive cost.&rdquo; &ldquo;Show measured money recovered across a batch.&rdquo; &ldquo;One cherry-picked match proves nothing.&rdquo;</p>
+      <p>None of those are feature requests. They are all the same request, repeated four times: <strong>prove your system works on data that could have embarrassed it.</strong> Nearly every submission will clear the build bar. The filter is here.</p>
+      <p>And the problem is real: if you generate the data and then grade yourself on it, you have proved nothing except that your generator and your model agree. There are exactly four ways out of that, and they are not equally available across the four tracks.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head col">
+      <span class="label">The escape routes</span>
+      <h2>Four ways to earn a number you didn't author</h2>
+    </div>
+    <div class="escapes">
+      <div class="escape">
+        <span class="tag">Strongest</span>
+        <h3>Third-party randomisation</h3>
+        <p>Public data where somebody else ran the randomised trial. Treatment was assigned by coin flip, by them, before you existed. The counterfactual is identifiable and the experiment is not yours to bias.</p>
+      </div>
+      <div class="escape">
+        <span class="tag">Strong</span>
+        <h3>Real labels, temporal split</h3>
+        <p>Real ground-truth labels you didn't write, tested forward in time rather than on a random shuffle. Chronology is what stops the future leaking into the past.</p>
+      </div>
+      <div class="escape">
+        <span class="tag">Strong</span>
+        <h3>Off-policy evaluation</h3>
+        <p>Score a policy you have never deployed using data logged under a different one, via importance weighting. The standard way to grade an agent's decisions before letting it touch money.</p>
+      </div>
+      <div class="escape">
+        <span class="tag">Weak alone</span>
+        <h3>Simulator with published DGP</h3>
+        <p>Synthetic data whose generating process you disclose in full. Worthless as sole evidence, genuinely valuable stacked on top of the others &mdash; it's the only way to know true per-unit effects.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head col">
+      <span class="label">Findings</span>
+      <h2>The four tracks, ranked by how defensible their numbers can be</h2>
+    </div>
+
+    <div class="cards">
+
+      <article class="card">
+        <div class="card-head">
+          <span class="rank">1</span>
+          <h3>Track 03 &mdash; AI Revenue Recovery</h3>
+          <span class="pill ok">Solved</span>
+        </div>
+        <div class="card-body">
+          <p>This one isn't close. Uplift modelling &mdash; estimating the <em>incremental</em> effect of an intervention rather than the raw outcome &mdash; comes with large, real, publicly released randomised trials.</p>
+          <div class="datum">
+            <span class="figure">13,979,592</span>
+            <span class="cap">Rows in the Criteo-UPLIFT benchmark: a genuine advertising incrementality trial with randomised treatment at p&nbsp;=&nbsp;0.85, released at AdKDD 2018 and available through <code>sklift.datasets.fetch_criteo</code>. Hillstrom MineThatData adds a real 64,000-customer, three-arm email RCT.</span>
+          </div>
+          <p>Because Criteo randomised the treatment, the counterfactual is identifiable at population level, and you can compute a true Qini coefficient and AUUC on a held-out slice of an experiment <strong>you had no hand in running</strong>. Then apply the same validated estimator to a payments simulator and score the resulting policy with off-policy evaluation. Two independent evidence layers, neither self-authored.</p>
+          <p>The segmentation is also instantly legible in a five-minute pitch: <strong>Persuadables</strong>, <strong>Sure Things</strong>, <strong>Lost Causes</strong>, and <strong>Sleeping Dogs</strong> &mdash; customers your intervention actively drives away. Nobody at this hackathon will model negative treatment effects, and it is precisely what the brief means by false-positive cost.</p>
+          <p class="verdict">Verdict: the only track where the honest number is also the impressive one.</p>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <span class="rank">2</span>
+          <h3>Track 02 &mdash; AI Risk Manager</h3>
+          <span class="pill mid">Real, but unflattering</span>
+        </div>
+        <div class="card-body">
+          <p>Real labelled data is abundant &mdash; IEEE-CIS carries 590,540 transactions at roughly 3.5% fraud. The brief's request for precision and recall on a held-out set is directly satisfiable. The rigour lives entirely in the traps.</p>
+          <div class="datum">
+            <span class="figure">0.925 &rarr; 0.537</span>
+            <span class="cap">Average precision on IEEE-CIS, moving from a random validation split to a true forward-in-time test period. ROC-AUC falls 0.977&nbsp;&rarr;&nbsp;0.853 over the same change. Random splits leak the future into the past; the collapse is what honesty costs.</span>
+          </div>
+          <p>Three non-negotiables: split temporally rather than randomly, report PR-AUC rather than ROC-AUC under this imbalance, and price false positives and false negatives separately &mdash; blocking a good customer and waving through fraud are not symmetric losses.</p>
+          <p>The genuinely under-known angle is <strong>verification latency</strong>. In production you don't get labels on time: investigators check a handful quickly, the rest arrive days later as chargebacks. Dal Pozzolo et al. show the right response is training separate classifiers on investigator feedback and on delayed labels, then aggregating &mdash; not pooling them. Almost nobody models this. On the algorithm side, FRAUDAR (KDD 2016 Best Paper) does camouflage-resistant dense-subgraph detection with provable bounds on fraudster effectiveness, mapping cleanly onto the abuse-ring brief.</p>
+          <p class="verdict">Verdict: rigour is available, but it means publishing numbers that look worse than your competitors' dishonest ones.</p>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <span class="rank">3</span>
+          <h3>Track 04 &mdash; AI Finance Controller</h3>
+          <span class="pill mid">No benchmark for the real task</span>
+        </div>
+        <div class="card-body">
+          <p>There is no public invoice-to-payment reconciliation dataset with gold-standard matches. That data is commercially sensitive and nobody releases it. This is a genuine, unfixable gap in the track.</p>
+          <p>The proxies are a step removed but real: Magellan, DeepMatcher and the Machamp generalised entity-matching benchmark all provide labelled match/no-match pairs with 9.4%&ndash;24.5% positive rates, and ERP-RiskBench offers procure-to-pay event logs covering two-way and three-way matching flows. You would validate the matcher on those, then run the full pipeline on a synthetic batch &mdash; the same two-layer structure as Track 03, but with a weaker outer layer.</p>
+          <p>The compensating strength is algorithmic taste. Many-to-many reconciliation with partial payments and netting is a set-partitioning problem, NP-hard in general and properly solved with integer programming, not fuzzy string matching. Confine the LLM to parsing unstructured remittance advice and you have a textbook answer to the &ldquo;where you chose not to use one&rdquo; criterion. Infeasibility in the solver also hands you the honest exception list for free.</p>
+          <p class="verdict">Verdict: excellent judgment story, thinner external validation.</p>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <span class="rank">4</span>
+          <h3>Track 01 &mdash; AI Growth &amp; Agentic Commerce</h3>
+          <span class="pill bad">Structurally unmeasurable</span>
+        </div>
+        <div class="card-body">
+          <p>&ldquo;Grow the merchant's revenue&rdquo; cannot be evidenced without buyers, and no public randomised trial of AI-buyer commerce exists. You would be asserting value, not measuring it.</p>
+          <p>There is one credible framework. &tau;-bench grades conversational tool-using agents by comparing the <strong>final database state</strong> against an annotated goal state &mdash; not by having a language model judge the transcript &mdash; and introduces <code>pass^k</code>: run the same task k independent times and measure how often <em>every</em> run succeeds.</p>
+          <div class="datum">
+            <span class="figure">pass^8 &lt; 25%</span>
+            <span class="cap">GPT-4o on &tau;-bench retail, against under 50% on single-attempt success. A devastating and highly quotable statistic about how unreliable commerce agents actually are once you stop measuring them once.</span>
+          </div>
+          <p>You could absolutely build a &tau;-bench-style harness over a checkout agent and be rigorous. But note what you'd be proving: <strong>reliability</strong>, not <strong>revenue</strong>. You would be answering a question the track didn't ask, and a sharp judge will say so.</p>
+          <p class="verdict">Verdict: the trendiest track and the one where honest evidence is hardest to produce.</p>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head col">
+      <span class="label">Summary</span>
+      <h2>Side by side</h2>
+    </div>
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Track</th>
+            <th>Real external data</th>
+            <th>Counterfactual identified?</th>
+            <th>Hardest honest metric</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="num">1</td>
+            <td class="track">03 Recovery</td>
+            <td>Criteo-UPLIFT (13.9M), Hillstrom (64k)</td>
+            <td>Yes &mdash; randomised by a third party</td>
+            <td>Qini coefficient, AUUC</td>
+          </tr>
+          <tr>
+            <td class="num">2</td>
+            <td class="track">02 Risk</td>
+            <td>IEEE-CIS (590k), ULB (285k)</td>
+            <td>N/A &mdash; prediction, not intervention</td>
+            <td>PR-AUC on a forward-in-time split</td>
+          </tr>
+          <tr>
+            <td class="num">3</td>
+            <td class="track">04 Finance</td>
+            <td>Machamp / DeepMatcher (proxy only)</td>
+            <td>N/A &mdash; deterministic matching</td>
+            <td>Match rate + unresolved exception list</td>
+          </tr>
+          <tr>
+            <td class="num">4</td>
+            <td class="track">01 Commerce</td>
+            <td>None for revenue; &tau;-bench for reliability</td>
+            <td>No</td>
+            <td><code>pass^k</code> over k trials</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head col">
+      <span class="label">Recommended build &middot; Track 03</span>
+      <h2>Three evidence layers that fail in different ways</h2>
+    </div>
+    <div class="col">
+      <p>The design principle: use estimators and datasets whose weaknesses don't overlap. Agreement between methods that could each be wrong for unrelated reasons is what converts a demo into evidence.</p>
+    </div>
+    <div class="layers" style="margin-top:1.75rem">
+      <div class="layer">
+        <span class="lname">Layer A</span>
+        <div>
+          <h3>External validity</h3>
+          <p>Fit the uplift estimator on Criteo-UPLIFT and Hillstrom and report Qini and AUUC against published baselines. Real randomised data, real experiment, run by someone else. This proves the pipeline works on data you did not create &mdash; and it is the layer that pre-empts the &ldquo;you made this up&rdquo; objection before it's raised.</p>
+        </div>
+      </div>
+      <div class="layer">
+        <span class="lname">Layer B</span>
+        <div>
+          <h3>Off-policy evaluation</h3>
+          <p>Log simulator actions under a stochastic behaviour policy with known propensities, then score your target policy with IPS, self-normalised IPS and doubly robust estimators. Three estimators that fail under different conditions, so convergence between them is informative. Report confidence intervals, not point estimates.</p>
+        </div>
+      </div>
+      <div class="layer">
+        <span class="lname">Layer C</span>
+        <div>
+          <h3>Simulator with disclosed generating process</h3>
+          <p>State plainly that it's synthetic, publish the DGP, name the confounding you injected, and hold out a control arm you never touch. Ground-truth per-unit treatment effects are known by construction here, which lets you report estimator error directly &mdash; something no real dataset permits. The disclosure is the credibility, not a weakness to bury.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="callout">
+      <span class="label">The move almost nobody makes</span>
+      <h3>Ship a passing placebo test</h3>
+      <p>Run your entire pipeline end to end on data where the treatment has <strong>zero</strong> true effect by construction. If the system still reports money recovered, your evaluation is broken and you have just found out cheaply.</p>
+      <p>Publishing a negative control that passes is close to unanswerable. It demonstrates that you understand your own measurement can lie to you, which is a strictly higher-order claim than any accuracy number, and it takes about an hour once the harness exists.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head col">
+      <span class="label">Judging criterion &middot; AI judgment</span>
+      <h2>Where the LLM belongs, and where it does not</h2>
+    </div>
+    <div class="col">
+      <p>The rubric asks for &ldquo;the right tool in the right place, <em>and where you chose not to use one</em>.&rdquo; That second clause is unusual and it is worth an explicit section in your README, because the default submission will be an LLM wrapped around everything.</p>
+    </div>
+    <div class="split" style="margin-top:1.75rem">
+      <div class="split-col">
+        <span class="label">Deliberately not an LLM</span>
+        <ul>
+          <li><b>Degradation detection</b>Wilson-interval significance testing on segment success rates. This is hypothesis testing; a language model cannot do it correctly and shouldn't be asked to.</li>
+          <li><b>Uplift estimation</b>T-learner or X-learner via <code>causalml</code>. Treatment-effect estimation has a correct estimator class with known properties. Using a chat model here would be malpractice.</li>
+          <li><b>Action selection</b>A deterministic policy engine over uplift, margin, consent state and caps. Anything that moves money must be reproducible, auditable, and identical on re-run.</li>
+        </ul>
+      </div>
+      <div class="split-col">
+        <span class="label">Genuinely an LLM</span>
+        <ul>
+          <li><b>Root-cause narrative</b>Turning segment statistics into an explanation a merchant can act on. Constrained to a fixed cause enum so it cannot invent a diagnosis.</li>
+          <li><b>Customer message copy</b>Hinglish and English recovery messaging, tone-matched to the failure reason. Language is where the real ambiguity lives.</li>
+          <li><b>Unstructured parsing</b>Reading messy failure reasons, bank strings and free-text remittance notes into structured fields. Classic extraction work with no deterministic alternative.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head col">
+      <span class="label">One more thing</span>
+      <h2>The competitive trap in Track 03</h2>
+    </div>
+    <div class="col">
+      <p>Razorpay already ships <strong>Optimizer</strong>, an ML payment router working over 150 parameters and 600 million data points, claiming up to 10% success-rate lift. Their Subscriptions product already does smart retry, claiming 57% recovery of failed attempts.</p>
+      <p>If you build &ldquo;smart retry&rdquo; or &ldquo;smart routing,&rdquo; you are rebuilding their shipped product, worse, in a week. That is the most likely way a Track 03 entry dies.</p>
+      <p>But the same research points at the gap. Razorpay published a blog post titled <em>&ldquo;How do you know that your Payments Router is actually creating value for your business?&rdquo;</em> &mdash; and shipped an entire performance report to answer it. That is not a routing problem. It is a causal measurement problem, and it is unsolved on their own product surface.</p>
+      <p>So don't compete on recovering more. Compete on <strong>proving the recovery was caused by you</strong>.</p>
+    </div>
+  </section>
+
+  <footer>
+    <span class="label">Sources</span>
+    <ol>
+      <li>Diemert et al., <a href="http://papers.adkdd.org/2018/papers/adkdd18-diemert-large-scale.pdf">A Large Scale Benchmark for Uplift Modeling</a>, AdKDD 2018 &mdash; the Criteo-UPLIFT dataset.</li>
+      <li>Gutierrez &amp; G&eacute;rardy, <a href="https://proceedings.mlr.press/v67/gutierrez17a/gutierrez17a.pdf">Causal Inference and Uplift Modelling: A Review of the Literature</a>, PMLR 2017.</li>
+      <li>Dal Pozzolo et al., <a href="https://dalpozz.github.io/static/pdf/TNNLS_2017.pdf">Credit Card Fraud Detection: A Realistic Modeling and a Novel Learning Strategy</a>, IEEE TNNLS 2018 &mdash; verification latency and delayed labels.</li>
+      <li>Hooi et al., <a href="https://www.cs.cmu.edu/~christos/PUBLICATIONS/kdd16-fraudar.pdf">FRAUDAR: Bounding Graph Fraud in the Face of Camouflage</a>, KDD 2016 Best Paper.</li>
+      <li>Yao et al., <a href="https://arxiv.org/abs/2406.12045">&tau;-bench: A Benchmark for Tool-Agent-User Interaction in Real-World Domains</a>, ICLR 2025 &mdash; the <code>pass^k</code> metric.</li>
+      <li><a href="https://counterfactual-ml.github.io/kdd2022-tutorial/">Counterfactual Evaluation and Learning for Interactive Systems</a>, KDD 2022 tutorial &mdash; IPS, SNIPS and doubly robust estimators.</li>
+      <li><a href="https://arxiv.org/pdf/2106.08455">Machamp: A Generalized Entity Matching Benchmark</a>, and the Magellan and DeepMatcher repositories.</li>
+      <li>Razorpay, <a href="https://razorpay.com/blog/how-do-you-know-that-your-payments-router-is-actually-creating-value-for-your-business-introducing-the-optimizer-performance-report/">Introducing the Optimizer performance report</a> and <a href="https://razorpay.com/blog/razorpay-optimizer-ai-powered-payments-router/">Razorpay Optimizer</a>.</li>
+      <li><a href="https://github.com/uber/causalml">causalml</a> (Uber) and <a href="https://github.com/maks-sh/scikit-uplift">scikit-uplift</a> &mdash; estimators, Qini and AUUC implementations.</li>
+    </ol>
+  </footer>
+
+</div>
