@@ -163,3 +163,45 @@ binary-classification framing is leaking effort.
 
 The problem is a **ranking** problem: choose the best of N, not classify each pair
 independently. Next step is a LambdaRank objective with the record as the group.
+
+---
+
+## Ranking objective beats binary classification
+
+Same features, same split, same data:
+
+| objective | top-1 | train |
+|---|---|---|
+| binary classification | 92.73% | 19.6s |
+| **LambdaRank** | **93.53%** | 22.1s |
+| trivial baseline | 90.63% | — |
+| blocking ceiling | 98.94% | — |
+
++0.80 pp for the formulation change alone, and +2.90 pp over baseline.
+
+The task is choose-best-of-N within a record, not classify-each-pair
+independently. Binary treats every candidate as its own yes/no question and
+spends capacity learning an absolute decision boundary that is never used --
+only the ordering within a record matters.
+
+**But I was half wrong about `n_candidates`.** It is still 23.2% of splits under
+LambdaRank, and I had written that a group-constant feature "cannot discriminate
+within a record". That is true of its *direct* effect and irrelevant to its real
+use: it gates the other features. The tree learns *"when this record has many
+candidates, weight the amount features differently than when it has few."* That
+is a legitimate interaction, not wasted capacity. Correcting the earlier entry
+rather than deleting it.
+
+## Calibration can silently change which candidate wins
+
+The binary run scored 93.50% before the LambdaRank change and 92.73% after, on
+identical code paths. The difference is the isotonic calibrator.
+
+Isotonic regression is monotonic, so it cannot reorder candidates -- but it is a
+*step* function, and it maps ranges of raw scores onto the same calibrated value.
+Distinct raw scores become tied, and `argmax` then picks whichever came first in
+the candidate set, which is arbitrary.
+
+**Rule:** rank on raw scores, calibrate the winner afterwards. Calibration exists
+to make the gate's threshold meaningful, and the gate only ever sees one score
+per record. Applying it before selection buys nothing and quietly costs accuracy.
