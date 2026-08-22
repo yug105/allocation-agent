@@ -477,3 +477,67 @@ This is precisely why the control exists. Had I reported the +25% spot-check arm
 as "the fix, -0.72 pp and closing", the number would have been real and the
 conclusion drawn from it wrong. An hour of control cost less than that would
 have.
+
+---
+
+## The learning loop works. I was measuring the wrong thing.
+
+Re-ran with the placebo corrected and precision tracked per batch. The picture
+inverts completely.
+
+```
+                       autonomy          precision
+C-1 learning off       81.9 -> 82.1      96.7 -> 97.3   (+0.60 pp)
+corrections only       81.9 -> 79.0      96.7 -> 99.4   (+2.66 pp)
++ spot-check 10%       81.9 -> 80.3      96.7 -> 99.0   (+2.32 pp)
++ spot-check 25%       81.9 -> 81.4      96.7 -> 99.2   (+2.51 pp)
+C-3 placebo            81.9 -> 39.9      96.7 -> 73.7   (-23.05 pp)
+```
+
+**The placebo now fails on both axes** -- autonomy -41.99 pp, precision -23.05 pp.
+Nonsense hurts everything. The control is finally isolating what it claims to.
+
+### What the loop actually does
+
+It does not make the agent post more. **It makes the agent post better.** Every
+learning arm gains 2.3-2.7 pp of precision against 0.6 pp for not learning at
+all, and the autonomy it gives up is the cost of that caution.
+
+Which is the correct direction for this domain. A wrong match closes a real
+exception and writes a false claim into the ledger; a missed match costs a
+reviewer ten minutes. Learning to be more careful is not a regression here, it is
+the whole point -- and I nearly recorded it as a failure because autonomy was the
+only number on the chart.
+
+### Combining the two axes
+
+| arm | correct auto-posts | **wrong auto-posts** |
+|---|---|---|
+| no learning | 79.88% | 2.22% |
+| corrections only | 78.53% | **0.47%  (-78.6%)** |
+| + spot-check 10% | 79.50% | 0.80%  (-63.8%) |
+| **+ spot-check 25%** | **80.75%** | **0.65%  (-70.6%)** |
+| placebo | 29.41% | 10.49%  (+373%) |
+
+**Spot-check 25% dominates the no-learning arm on both counts**: slightly more
+correct posts (80.75% vs 79.88%) and **71% fewer wrong ones**.
+
+On a batch of 4,000 records that is **89 wrong auto-posts falling to 26**.
+
+### The chain this took
+
+1. Loop appears to make things worse: -3.15 pp autonomy, reproducing under three
+   orderings
+2. Diagnosed the mechanism: corrections come only from refused records, training
+   drifts toward ambiguous cases, margins compress
+3. Fix predicted and confirmed: spot-checking posted records produces a clean
+   monotonic dose-response
+4. Placebo caught that autonomy is gameable -- garbage improved it
+5. Added precision; the result inverts and the loop is doing the right thing
+
+Steps 4 and 5 are the ones that mattered. Without the control I would have
+reported "the learning loop reduces autonomy by 0.72 pp and needs more work",
+which is true, measured, and the wrong conclusion.
+
+**Headline, stated correctly:** the learning loop cuts wrong auto-posts by 71%
+at a cost of 0.7 pp of straight-through rate.

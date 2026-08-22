@@ -50,6 +50,23 @@ Held-out temporal split, test frozen, models trained on earlier records only.
 
 Review volume falls from 37,398 records to 7,749 — a **79.3% reduction in what a human must look at.**
 
+### The learning loop
+
+Cold start on 3,000 records, then learning from what a reviewer says. Ten batches of 4,000, all controls run.
+
+| arm | autonomy | precision | **wrong auto-posts** |
+|---|---|---|---|
+| no learning | 82.1% | 97.3% | 2.22% |
+| corrections only | 79.0% | 99.4% | 0.47% |
+| **+ spot-check 25%** | **81.4%** | **99.2%** | **0.65%  (−71%)** |
+| placebo (control) | 39.9% | 73.7% | 10.49% |
+
+**The loop cuts wrong auto-posts by 71% at a cost of 0.7 pp of straight-through rate.** On a 4,000-record batch that is 89 wrong posts falling to 26.
+
+It does not make the agent post *more* — it makes it post *better*, which is the right direction when a wrong match writes a false claim into the ledger and a missed one costs ten minutes of review.
+
+Getting here required discovering that autonomy alone is a gameable metric: feeding the loop deliberately wrong answers *improved* it, because posting is gated on score margin and easy examples widen margins regardless of correctness. That is in [`BUILD_JOURNAL.md`](BUILD_JOURNAL.md).
+
 ### Multiplicity detection — the 11.3% nobody automates
 
 | flag top | precision | recall |
@@ -87,7 +104,7 @@ Two constraints hold that in place:
 
 The full account is in [`BUILD_JOURNAL.md`](BUILD_JOURNAL.md), written as it happened. Three that mattered:
 
-**The learning loop made the system worse.** Corrections come only from records the gate refused — the ambiguous ones by construction. The training set drifts toward hard cases, the model separates them less sharply, margins compress, confidence falls, fewer records post. Measured at **−3.15 pp against not learning at all**, reproducing under three shuffled orderings. The placebo control passed (random corrections cost 22.8 pp), which is what made the result trustworthy rather than a plumbing bug.
+**I nearly recorded a working learning loop as a failure.** It appeared to cost 3.15 pp of autonomy, reproducing under three shuffled orderings. Then the placebo control improved by 3.72 pp — feeding deliberately wrong answers made autonomy go *up*. That exposed the metric: posting is gated on score margin, easy examples widen margins, so autonomy measures *decisiveness*, not correctness. Adding precision to every arm inverted the conclusion — the loop trades 0.7 pp of straight-through for **71% fewer wrong auto-posts**.
 
 **I nearly built blocking on a false assumption.** First measurement said amount was useless as a signal — 29% exact match, median residual 6.2 million. Wrong: I was comparing one bank record against the sum of *every* ledger row sharing a key, and a key can span 624 rows. Measured properly, **90.9% of records match some individual row to the paisa.**
 
