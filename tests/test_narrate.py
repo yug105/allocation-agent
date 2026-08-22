@@ -151,3 +151,37 @@ def test_empty_input_makes_no_call():
 
     assert Narrator(backend=Counting()).narrate([]) == []
     assert not calls
+
+
+# --------------------------------------------------------------------------- #
+# spending money must be deliberate
+# --------------------------------------------------------------------------- #
+
+def test_a_paid_model_is_refused_by_default():
+    """Narration is an optional upgrade over templates that already work.
+    A loop over a large batch is exactly where an accidental paid model gets
+    expensive before anyone notices."""
+    from allocation_agent.decide.openrouter import OpenRouterBackend, PaidModelRefused
+
+    with pytest.raises(PaidModelRefused, match="free-tier"):
+        OpenRouterBackend(api_key="k", model="openai/gpt-4o")
+
+
+def test_a_free_model_is_allowed():
+    from allocation_agent.decide.openrouter import OpenRouterBackend
+
+    assert OpenRouterBackend(api_key="k", model="some/model:free").model.endswith(":free")
+
+
+def test_paid_can_be_enabled_deliberately():
+    from allocation_agent.decide.openrouter import OpenRouterBackend
+
+    b = OpenRouterBackend(api_key="k", model="openai/gpt-4o", allow_paid=True)
+    assert b.model == "openai/gpt-4o"
+
+
+def test_the_refusal_says_how_to_override():
+    from allocation_agent.decide.openrouter import OpenRouterBackend, PaidModelRefused
+
+    with pytest.raises(PaidModelRefused, match="ALLOW_PAID_LLM"):
+        OpenRouterBackend(api_key="k", model="anthropic/claude-3-opus")

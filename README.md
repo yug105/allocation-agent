@@ -1,0 +1,145 @@
+# Allocation Agent
+
+**Money lands in a bank account. Somewhere in the books there is a record of what it was for. Connect them — and when one payment covers *several* records, notice that too.**
+
+Built for the Razorpay Buildathon, Track 04 — AI Finance Controller.
+
+---
+
+## The finding this is built on
+
+The data is [BenchRec](https://www.kaggle.com/datasets/benchmarkteam/benchrec-real-world-cash-reconciliation-dataset): 223,937 rows covering 172,023 reconciliations of obfuscated ledger and bank records, released from a **Tier-1 financial institution's production system**. The labels are decisions real analysts made about real money.
+
+Split those reconciliations by shape and one number stands out:
+
+| Match shape | Count | Resolved automatically |
+|---|---|---|
+| one-to-one | 153,557 | **94%** |
+| many-to-one | 11,692 | 34% |
+| one-to-many | 3,911 | **0%** |
+| many-to-many | 2,707 | **0%** |
+
+Their rules engine handled almost every simple match and **none** of the grouped ones. Not few — none. All 6,618 went to a person, and the data says so directly: every one carries `matchRule == MANUAL`.
+
+That is the gap this fills.
+
+---
+
+## Results
+
+Held-out temporal split, test frozen, models trained on earlier records only.
+
+### Matching
+
+| | |
+|---|---|
+| blocking recall | **98.94%** — the ceiling on everything downstream |
+| top-1 accuracy | **93.53%** |
+| trivial baseline | 90.63% (exact amount, tiebreak nearest date) |
+
+### End-to-end, 37,398 records
+
+| | |
+|---|---|
+| straight-through rate | 79.3% |
+| **precision of auto-posted matches** | **99.2%** (29,426 / 29,649) |
+| grouped records routed to review | 87.3% |
+| throughput | 524 rec/sec |
+| **LLM calls on the matching path** | **0** |
+| records unaccounted for | **0** |
+
+Review volume falls from 37,398 records to 7,749 — a **79.3% reduction in what a human must look at.**
+
+### Multiplicity detection — the 11.3% nobody automates
+
+| flag top | precision | recall |
+|---|---|---|
+| **5%** | **96.3%** | 47.3% |
+| 10% | 77.4% | 76.1% |
+| 15% | 62.1% | 91.6% |
+
+PR-AUC 87.2% against a 10.2% positive rate. Beats the obvious rule (no exact-amount match) on F1: 76.7% vs 72.2%.
+
+---
+
+## What is *not* an LLM, and why
+
+| Stage | Kind | Reason |
+|---|---|---|
+| blocking | rules | a hash lookup; a model would be slower and worse |
+| ranking | gradient-boosted trees | 169,168 labelled examples exist. That is supervised learning. |
+| multiplicity | gradient-boosted trees | same |
+| gate | rules | anything deciding where money goes must be reproducible |
+| residual diagnosis | **arithmetic** | each cause predicts a residual; rank by fit |
+| column mapping | **LLM** | no deterministic parser generalises across formats |
+| narration | **LLM** | language is where the ambiguity is |
+
+**The model ranks. The engine decides. The person commits.**
+
+Two constraints hold that in place:
+
+- **The narrator may not introduce a number.** Every figure in generated text must appear in the input payload, checked after generation. There is a test that feeds it a lying backend and asserts the invented figure never reaches output.
+- **The audit log is append-only, enforced by the database.** SQLite triggers reject `UPDATE` and `DELETE` on decisions. A reviewer overturning a decision writes a *new* row; both stay visible.
+
+---
+
+## What broke
+
+The full account is in [`BUILD_JOURNAL.md`](BUILD_JOURNAL.md), written as it happened. Three that mattered:
+
+**The learning loop made the system worse.** Corrections come only from records the gate refused — the ambiguous ones by construction. The training set drifts toward hard cases, the model separates them less sharply, margins compress, confidence falls, fewer records post. Measured at **−3.15 pp against not learning at all**, reproducing under three shuffled orderings. The placebo control passed (random corrections cost 22.8 pp), which is what made the result trustworthy rather than a plumbing bug.
+
+**I nearly built blocking on a false assumption.** First measurement said amount was useless as a signal — 29% exact match, median residual 6.2 million. Wrong: I was comparing one bank record against the sum of *every* ledger row sharing a key, and a key can span 624 rows. Measured properly, **90.9% of records match some individual row to the paisa.**
+
+**Graceful degradation got demonstrated by accident.** The LLM model I first configured does not exist — 404. I found out not from an error but because the narrator quietly produced complete, correct output and I checked why `source` said `template`. The batch finished; every exception got an accurate cause; nothing failed.
+
+---
+
+## Limitations
+
+Stated plainly, because the alternative is being asked about them.
+
+**The identity layer cannot be evaluated on this data.** `orderingPartyInfo` and `receivingPartyInfo` are **0% populated** — there are no counterparty names at all. So the five-layer resolver and transitive alias clustering in the design have nothing to run on here.
+
+**Direction is not a usable constraint here.** `debitOrCredit` has one distinct value (`NONE`) across all 211,744 ledger rows. The design treats direction as a hard constraint, following a published post-mortem; there is nothing to constrain.
+
+**1.06% of records are lost at blocking** and cannot be recovered downstream. Widening the window to ±14 days recovers 0.4% of that for double the candidates.
+
+**223 auto-posted matches are wrong.** That is what 99.2% precision leaves. Each closes a real exception and writes a false claim into the ledger.
+
+**1,535 single-key records were wrongly sent for review** — 4.1% of the batch doing unnecessary work, the false-positive cost of catching 87.3% of the grouped ones.
+
+**Straight-through is below vendor claims.** HighRadius publishes 95–98% auto-match; this posts 79.3%. Some of the gap is definitional — routing a grouped record to a human counts against us and may not count against them — but the comparison is written the way that does not assume our favour.
+
+**Throughput is 1.26× the published commercial figure, not more.** Blocking alone runs at 6,720 rec/sec; the pipeline is still a per-record Python loop.
+
+**The free LLM's prose is worse than the templates it replaces.** The architecture is sound; the output is not yet an improvement. Templates are the default and the model is the optional upgrade — the reverse of what the design assumed.
+
+---
+
+## Running it
+
+```bash
+uv venv && uv pip install -e ".[dev]"
+uv run pytest                              # 199 tests
+
+uv run python scripts/measure_blocking.py  # recall/size tradeoff
+uv run python scripts/train_ranker.py      # top-1 vs baselines
+uv run python scripts/train_multiplicity.py
+uv run python scripts/run_batch.py         # end-to-end + audit trail
+uv run python scripts/run_learning.py      # learning loop + all controls
+```
+
+Everything runs on CPU. No GPU, no external services required — the LLM layer is optional and falls back to templates without a key.
+
+```bash
+cp .env.example .env    # optional: add an OpenRouter key for narration
+```
+
+---
+
+## Design
+
+[`docs/DESIGN.md`](docs/DESIGN.md) — HLD and LLD, including the parts not yet built and the decisions still open.
+
+Where the code and the design disagree, the journal explains which measurement changed my mind.
