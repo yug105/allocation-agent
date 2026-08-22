@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 
 _ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
-_DEFAULT_MODEL = "google/gemini-2.0-flash-exp:free"
+_DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning:free"
 
 
 class OpenRouterBackend:

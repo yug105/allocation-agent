@@ -377,3 +377,48 @@ would actually do.
 what a finance function already does under the name spot-checking. If the
 diagnosis is right, restoring the easy cases to the training set should restore
 the curve. Testing that rather than assuming it.
+
+---
+
+## Graceful degradation demonstrated by accident
+
+The model I first configured, `google/gemini-2.0-flash-exp:free`, returns
+**404 -- no endpoints found**. It does not exist on OpenRouter.
+
+I did not discover this from an error. I discovered it because the narrator
+quietly produced complete, correct output via templates and I checked *why* the
+`source` field said `template` instead of `llm`.
+
+That is the intended behaviour working: the batch finished, every exception got
+an accurate cause and a readable sentence, and nothing failed. The diagnosis is
+arithmetic and needs no model at all -- BANK_CHARGE, ROUNDING and UNEXPLAINED
+were all correctly identified with the language layer entirely unavailable.
+
+Better demonstration of "the AI can fail, the system cannot" than the deliberate
+chaos test would have been, because nobody staged it.
+
+## Live LLM: it works, and the prose is poor
+
+Switched to `nvidia/nemotron-3.5-lightning:free`.
+
+```
+1 call, 4 items, 34.9s
+  [llm] BANK_CHARGE   BANK_CHARGE on amount 20000 with 1 line and residual 200.
+  [llm] ROUNDING      ROUNDING affects amount 500000 with 4 lines and residual 3.
+  [llm] UNEXPLAINED   UNEXPLAINED discrepancy on amount 1000 with 1 line and residual 123456.
+second pass: 1 total call, 0.000s (cache hit)
+```
+
+**The architecture works.** One call for four items, every figure validated
+against the payload, second pass served entirely from cache.
+
+**The sentences are bad.** The model is essentially restating the payload fields
+in a sentence-shaped way -- "BANK_CHARGE on amount 20000 with 1 line" is not what
+a reviewer wants to read. A stronger model would write better prose; this one is
+free and slow (34.9s for one call).
+
+Recording rather than dressing it up: the constraint that makes the layer safe
+(no figure may be introduced) is satisfied, and the output quality is currently
+worse than the hand-written templates it falls back to. On this evidence the
+template path is the better default, and the model is the optional upgrade --
+which inverts what the design assumed.
