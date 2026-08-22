@@ -100,20 +100,30 @@ def main():
           f"({time.perf_counter()-t:.1f}s)")
     print(f"scoreable records  train {len(gtr):,}  test {len(gte):,}\n")
 
-    t = time.perf_counter()
-    r = Ranker().fit(Xtr, ytr, Xva, yva)
-    print(f"trained in {time.perf_counter()-t:.1f}s")
-
-    t = time.perf_counter()
-    s = r.score(Xte)
-    model_acc = top1(s, gte)
-    dur = time.perf_counter() - t
+    results = {}
+    for obj in ("binary", "rank"):
+        t = time.perf_counter()
+        cfg = RankerConfig(objective=obj)
+        r = Ranker(cfg)
+        if obj == "rank":
+            r.fit(Xtr, ytr, group=[e - s_ for (s_, e, _, _) in gtr])
+        else:
+            r.fit(Xtr, ytr, Xva, yva)
+        train_s = time.perf_counter() - t
+        t = time.perf_counter()
+        acc = top1(r.score(Xte), gte)
+        results[obj] = (acc, train_s, time.perf_counter() - t, r)
+        print(f"{obj:8} trained {train_s:5.1f}s  scored {time.perf_counter()-t:5.1f}s  top-1 {acc*100:.2f}%")
+    r = results["rank"][3]
+    model_acc = results["rank"][0]
+    dur = results["rank"][2]
 
     base = baseline_top1(ds, idx, kstats, sp.test)
     print(f"\n{'':28} {'top-1':>8}")
     print("-" * 40)
     print(f"{'trivial baseline':28} {base*100:7.2f}%")
-    print(f"{'ranker (temporal, held-out)':28} {model_acc*100:7.2f}%")
+    print(f"{'ranker  binary':28} {results['binary'][0]*100:7.2f}%")
+    print(f"{'ranker  lambdarank':28} {model_acc*100:7.2f}%")
     print(f"{'blocking ceiling':28} {98.94:7.2f}%")
     print(f"\nlift over baseline: {(model_acc-base)*100:+.2f} pp")
     print(f"scoring {len(gte):,} records in {dur:.1f}s")

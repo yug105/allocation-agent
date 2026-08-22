@@ -28,6 +28,10 @@ class RankerConfig:
     """Hard negatives from the same block. Capped to bound memory and to stop
     records with huge candidate sets dominating the training set."""
     random_state: int = 0
+    objective: str = "rank"
+    """``rank`` uses LambdaRank with the record as the group -- the problem is
+    choose-best-of-N, not classify-each-pair. ``binary`` keeps the simpler
+    formulation for comparison."""
 
 
 class Ranker:
@@ -37,22 +41,43 @@ class Ranker:
         self.config = config or RankerConfig()
         self._model = None
         self._calibrator = None
+        self._ranking = False
 
-    def fit(self, X: np.ndarray, y: np.ndarray, X_cal=None, y_cal=None) -> "Ranker":
-        from lightgbm import LGBMClassifier
+    def fit(self, X, y, X_cal=None, y_cal=None, group=None, group_cal=None) -> "Ranker":
+        """Fit the scorer.
 
+        Args:
+            group: sizes of each record's candidate set, required for ``rank``.
+                Ranking optimises the ordering *within* a record, which is the
+                actual task; binary classification treats every pair as
+                independent and wastes capacity on features that are constant
+                across a record's candidates.
+        """
         cfg = self.config
-        pos = max(int(y.sum()), 1)
-        self._model = LGBMClassifier(
+        common = dict(
             n_estimators=cfg.n_estimators,
             learning_rate=cfg.learning_rate,
             num_leaves=cfg.num_leaves,
             min_child_samples=cfg.min_child_samples,
             random_state=cfg.random_state,
-            scale_pos_weight=(len(y) - pos) / pos,
             verbose=-1,
         )
-        self._model.fit(X, y, feature_name=list(FEATURE_NAMES))
+
+        if cfg.objective == "rank":
+            from lightgbm import LGBMRanker
+
+            if group is None:
+                raise ValueError("objective='rank' needs group sizes")
+            self._model = LGBMRanker(objective="lambdarank", **common)
+            self._model.fit(X, y, group=group, feature_name=list(FEATURE_NAMES))
+            self._ranking = True
+        else:
+            from lightgbm import LGBMClassifier
+
+            pos = max(int(y.sum()), 1)
+            self._model = LGBMClassifier(scale_pos_weight=(len(y) - pos) / pos, **common)
+            self._model.fit(X, y, feature_name=list(FEATURE_NAMES))
+            self._ranking = False
 
         if X_cal is not None and len(X_cal):
             from sklearn.isotonic import IsotonicRegression
@@ -62,9 +87,17 @@ class Ranker:
         return self
 
     def score(self, X: np.ndarray) -> np.ndarray:
-        """Probability that each pair is a match."""
+        """Score each pair. Higher is better.
+
+        Under ``rank`` these are relevance scores, not probabilities: they order
+        candidates within a record but carry no absolute meaning. Calibration
+        (needed by the gate) is applied separately, per record, from the score
+        margin.
+        """
         if self._model is None:
             raise RuntimeError("Ranker is not fitted")
+        if getattr(self, "_ranking", False):
+            return self._model.predict(X)
         raw = self._model.predict_proba(X)[:, 1]
         return self._calibrator.predict(raw) if self._calibrator is not None else raw
 
