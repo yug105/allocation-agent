@@ -541,3 +541,66 @@ which is true, measured, and the wrong conclusion.
 
 **Headline, stated correctly:** the learning loop cuts wrong auto-posts by 71%
 at a cost of 0.7 pp of straight-through rate.
+
+---
+
+## The group solver cannot be evaluated on this data. The subset-sum premise does not hold.
+
+Before building the solver I checked whether MULT records are actually subset
+sums. Over 4,000 MULT match groups:
+
+```
+B equals a single A row          10.2%
+B equals a SUM of A rows          0.0%      <- zero
+B is neither                     89.8%
+group balances (sumA == sumB)     8.2%
+```
+
+Not one record in the sample. With tolerance, over 2,916 records:
+
+```
+best achievable |B - subset(A)|     exact  7.7%   (all single-row, no sums)
+                                  <= 1.00 10.1%
+                                  <= 100  22.5%
+median gap                        Rs 691.35
+```
+
+**Yet 99.6% of MULT amounts do appear as an A-side amount somewhere in the
+dataset** -- just not inside their own match group.
+
+### What that means
+
+`matchId` is not a closed accounting unit. It is a reconciliation batch
+identifier, and the A and B rows inside one do not sum to each other. So there is
+no subset to find, because the grouping I would solve over is the wrong grouping.
+
+And the decisive problem is the labels: **`targetAllocation` for a grouped record
+is the literal string `MULT` and nothing more.** The dataset never records which
+keys such a record maps to. Even a perfect solver could not be scored, because
+the ground truth does not exist in the file.
+
+### What I was about to build
+
+The design put the subset-sum DP from the J.P. Morgan ECAI 2025 paper at the
+centre and called it the differentiator. The paper is sound and the problem it
+formalises is real -- Hyperswitch, HighRadius and a competing entry all describe
+grouped matching as the hard case. **BenchRec simply does not contain that
+pattern**, and I would have discovered this only after building the solver and
+finding nothing to measure it against.
+
+Third design assumption overturned by measurement, after the amount-aggregation
+mistake and the autonomy metric.
+
+### What is still true
+
+The multiplicity detector stands. `MULT` is a real, labelled class covering 11.3%
+of records, **100% of which were resolved manually** by the source institution,
+and detecting it at 96.3% precision on a 5% alert budget is a genuine result. What
+changes is the claim: **detect and route**, not **detect and solve**.
+
+### Decision
+
+Build the solver, validate it on generated data with subset structure injected by
+construction, and state in the README that BenchRec cannot exercise it. A
+capability that is tested but unexercised by the available data is honest. A
+capability claimed on data that cannot demonstrate it is not.
