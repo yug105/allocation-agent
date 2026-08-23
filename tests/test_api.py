@@ -806,3 +806,27 @@ def test_the_date_layout_that_was_chosen_is_reported_back(client):
         "invoice,account,amount,date\nINV-1,A-1,80.50,2026-03-03\n")).json()
     assert body["date_layout"]["bank"] in {"DD/MM/YYYY", "MM/DD/YYYY"}
     assert body["date_layout"]["ledger"] == "YYYY-MM-DD"
+
+
+# --------------------------------------------------------------------------- #
+# Measured on the deployed free instance: ~40 records/second, so the page's old
+# default of 500 was a 13-second wait behind a button that only says
+# "running...", and its old maximum of 4,000 was around 100 seconds -- long
+# enough that a visitor concludes it has hung. The controls now offer what the
+# deployed box can actually do.
+# --------------------------------------------------------------------------- #
+
+def test_the_demo_control_defaults_to_a_batch_that_returns_quickly(client):
+    import re
+    page = client.get("/").text
+    field = re.search(r'<input id=n type=number value=(\d+) min=\d+ max=(\d+)', page)
+    assert field, "record-count control not found"
+    default, maximum = int(field.group(1)), int(field.group(2))
+    assert default <= 250, f"default of {default} is a {default / 40:.0f}s wait"
+    assert maximum <= 2000, f"maximum of {maximum} is a {maximum / 40:.0f}s wait"
+
+
+def test_the_page_states_the_deployed_throughput(client):
+    """A visitor who knows it is six seconds waits; one who does not reloads."""
+    page = client.get("/").text
+    assert "40 records a second" in page

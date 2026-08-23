@@ -113,10 +113,14 @@ wrong match costs money.</p>
   answers are known — so the accuracy below is measured against them, not
   asserted.</p>
   <div>
-    <label>how many records <input id=n type=number value=500 min=1 max=4000 style=width:6rem></label>
+    <label>how many records <input id=n type=number value=200 min=1 max=2000 style=width:6rem></label>
     <label title="Send everything to a person, to see the queue the reviewers would get"><input id=all type=checkbox> review everything</label>
     <button id=go>Run</button>
   </div>
+  <p class=faint style="margin:.5rem 0 0">This runs on a free instance with a
+  fraction of a CPU — about <b>40 records a second</b>, so 200 takes roughly six
+  seconds and 2,000 takes closer to a minute. On a laptop the same code does
+  ~495/sec; the gap is the hardware, not the pipeline.</p>
   <div id=out></div>
 </section>
 
