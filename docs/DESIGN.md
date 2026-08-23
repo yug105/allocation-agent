@@ -765,20 +765,37 @@ class SolverConfig:
     tolerance_minor: int = 0
     max_candidates: int = 64        # pool cap; refused, never truncated to fit
     max_target_minor: int = 5_000_000_000
-    max_subset_size: int = 8        # latency guard, NOT an accuracy lever
+    max_subset_size: int = 3        # evidence policy, measured -- see below
     require_unique: bool = True     # refuse ties instead of ranking them
 ```
 
 **Guards**
 - pool over `max_candidates` → `TOO_LARGE`, refused rather than truncated
-- subset larger than `max_subset_size` → not returned; a six-payment coincidence
-  is weak evidence, not a match
+- subset larger than `max_subset_size` → not returned; a four-payment
+  coincidence is weak evidence, not a match
 - multiple subsets valid at the smallest size → `AMBIGUOUS`, **nothing claimed**
 
-`max_subset_size` was expected to be an accuracy lever and is not: 8 and 64 give
-identical results, because min-cardinality search finds the real batch (median
-size 2) long before the cap binds. Documented as a latency guard rather than
-claimed as part of the gain.
+`max_subset_size` **is** an accuracy lever, and the first version of this
+section said it was not. That claim came from comparing 8 against 64, which are
+both far above any real batch and therefore indistinguishable. Comparing
+against small values tells a different story -- precision by how many payments
+the answer used:
+
+| payments used | answers | right | precision | subsets of that size |
+|---|---|---|---|---|
+| 1 | 7 | 7 | 100.0% | ~93 |
+| 2 | 62 | 62 | 100.0% | ~4,371 |
+| 3 | 46 | 44 | 95.7% | ~138,415 |
+| 4 | 1 | **0** | **0.0%** | ~3,612,280 |
+| 5 | 1 | **0** | **0.0%** | ~64,446,024 |
+
+Every correct answer used three payments or fewer, so tightening costs no
+coverage and removes only wrong answers. It shipped at 4 before 3, on the
+reasoning that capping at the largest observed batch would be overfitting; the
+cap of 4 admitted exactly one answer and that answer was wrong. The 0% above
+three is two records, not a rate, and ReconRiver's batches never exceed three,
+so nothing here validates a larger cap -- it is a constructor argument for that
+reason.
 
 **Measured on ReconRiver** (150 settlements, pool median 97, batch ids hidden):
 
@@ -786,7 +803,8 @@ claimed as part of the gain.
 |---|---|---|---|---|
 | reachability DP, first subset | 38.0% | 39.0% | 59.3% | — |
 | smallest subset | 83.3% | 93.3% | 6.0% | — |
-| smallest, refuse ties (shipped) | **75.3%** | **96.6%** | **2.7%** | 11.3% |
+| smallest, refuse ties | 75.3% | 96.6% | 2.7% | 11.3% |
+| + cap the answer at 3 payments (shipped) | **75.3%** | **98.3%** | **1.3%** | 9.3% |
 
 The shipped row is deliberately not the best coverage. It gives up 8pp to halve
 wrong answers; refused credits go to a reviewer, wrong ones balance the books
@@ -1082,7 +1100,7 @@ gate:
 
 solver:
   max_candidates: 64
-  max_subset_size: 8
+  max_subset_size: 3
   require_unique: true      # refuse ties rather than ranking them
   tolerance_minor: 0
 

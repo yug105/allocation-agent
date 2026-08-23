@@ -180,7 +180,7 @@ structure BenchRec does not have (measured; see the journal).
 | reachability DP, first subset | 38.0% | 39.0% | 59.3% | -- |
 | smallest subset | 83.3% | 93.3% | 6.0% | -- |
 | smallest, refuse ties | 75.3% | 96.6% | 2.7% | 11.3% |
-| + cap the answer at 4 payments (shipped) | **75.3%** | **97.4%** | **2.0%** | 10.7% |
+| + cap the answer at 3 payments (shipped) | **75.3%** | **98.3%** | **1.3%** | 9.3% |
 
 `coverage` = credits whose recorded batch it recovered. `precision` = of the
 answers it gave, how many were the recorded batch. Reporting either alone is how

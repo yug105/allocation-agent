@@ -1141,3 +1141,58 @@ payments sums to this credit." A five-payment combination sums to it exactly —
 that is how the wrong answer arose. The honest sentence is that longer
 combinations may exist and are deliberately not claimed, which is what it now
 says.
+
+---
+
+## An independent review of the last two commits found thirteen defects
+
+Every one was in work I had described as finished. Six I verified by running
+the code before touching it; the rest were confirmed by reading. The pattern is
+worth more than the list: **most were shipped alongside a test that was written
+to catch exactly that defect and did not.**
+
+| | defect | the test that should have caught it |
+|---|---|---|
+| F1 | `rates_meaningful` guarded on the record count while precision's denominator is the *answer* count. 20 records → 3 answers → `0.0%` printed in green | two tests, at `limit=1` and `limit=150`, that pass for any threshold between 2 and 150 and never touch the boundary |
+| F2 | the refusal sentence said "six payments" while the cap was 4 | a test asserting `"not" in expl and "claimed" in expl` — true of the contradictory sentence |
+| F6 | `is_exact` tested before `status`, so a record with **no answer** badges green "Found the group" | a test asserting `"wrong" in v or "not" in v`, which passes for "Nothing found" |
+| F9 | the cap test hardcoded `<= 4` instead of reading the config | — |
+
+`"not" in verdict` matches *Nothing*, *Notable*, *Another*. An assertion that
+loose is not a weaker test, it is not a test.
+
+### The one that was a judgement error
+
+I capped claimed answers at 4 payments while the measurement said precision
+collapses to 0% above 3, reasoning that capping at 3 would be "fitting to the
+largest batch the data happens to contain". The result:
+
+```
+answers by size, cap = 4:   1 payment  7 (7 right)
+                            2 payments 62 (62 right)
+                            3 payments 46 (44 right)
+                            4 payments  1 (0 right)   <- the only one the cap admitted
+```
+
+**The cap of 4 admitted exactly one answer and that answer was wrong.**
+Declining to fit the data is not a virtue when the only thing the extra room
+admits is a mistake. Now 3: 98.3% precision against 96.6%, at identical
+coverage, because every correct answer used three payments or fewer.
+
+Worse than the cap itself was the paragraph I wrote defending it, which cited
+sizes 1, 2, 3 and 5 — **skipping 4**, the only size the decision turned on. The
+prose argued for a cap of 3 while the code shipped 4, and I did not notice
+because I had left the inconvenient row out of the sentence.
+
+### Two documents that disagreed with the code
+
+`DESIGN.md` still said `max_subset_size = 8` and "NOT an accuracy lever" — the
+exact claim the change reversed — two commits after I had updated that file
+specifically to match what shipped. And `scripts/eval_solver.py`, which
+generates the README table, no longer reproduced it: both configured variants
+inherited the new default, so the 96.6% row was unreachable and "(shipped)" sat
+on the wrong row. Every variant now states its cap explicitly.
+
+Regenerating that table immediately caught a stale figure I had hand-carried
+into README.md and DESIGN.md: ties refused was 9.3%, not 10.7%. A number typed
+by hand is a number nobody checked.

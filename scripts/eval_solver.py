@@ -59,12 +59,19 @@ def main() -> None:
           f"{stx.median(len(s['pool']) for s in sett):.0f} | batch size median "
           f"{stx.median(len(s['truth']) for s in sett):.0f} "
           f"max {max(len(s['truth']) for s in sett)}\n")
-    print(f"{'':32}{'coverage':>10}{'precision':>11}{'wrong':>8}{'ambig':>7}{'p50ms':>8}{'p99ms':>8}")
+    print(f"{'':42}{'coverage':>10}{'precision':>11}{'wrong':>8}{'ambig':>7}{'p50ms':>8}{'p99ms':>8}")
 
+    # Every variant states max_subset_size explicitly. They previously
+    # inherited the default, so moving the default silently rewrote two rows of
+    # the README table this script generates and left "(shipped)" on the wrong
+    # one -- the 96.6% figure became unreproducible.
     variants = [
         ("reachability DP, first subset", None),
-        ("smallest subset", SolverConfig(max_candidates=128, require_unique=False)),
-        ("smallest, refuse ties (shipped)", SolverConfig(max_candidates=128)),
+        ("smallest subset", SolverConfig(max_candidates=128, max_subset_size=8,
+                                         require_unique=False)),
+        ("smallest, refuse ties", SolverConfig(max_candidates=128, max_subset_size=8)),
+        ("+ cap the answer at 3 payments (shipped)",
+         SolverConfig(max_candidates=128, max_subset_size=3)),
     ]
 
     for label, cfg in variants:
@@ -94,7 +101,7 @@ def main() -> None:
 
         n = len(sett)
         lat.sort()
-        print(f"{label:32}{exact / n * 100:9.1f}%"
+        print(f"{label:42}{exact / n * 100:9.1f}%"
               f"{(exact / solved * 100 if solved else 0):10.1f}%"
               f"{wrong / n * 100:7.1f}%{ambiguous / n * 100:6.1f}%"
               f"{lat[len(lat) // 2]:8.1f}{lat[int(len(lat) * 0.99)]:8.1f}")

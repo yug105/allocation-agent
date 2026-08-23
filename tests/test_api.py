@@ -484,17 +484,21 @@ def test_the_direct_match_says_in_plain_words_why_it_was_certain(client):
 # --------------------------------------------------------------------------- #
 
 def test_a_balancing_but_wrong_subset_is_never_labelled_found(settled):
+    """Asserted on the exact string. The first version of this test accepted
+    any verdict containing "not", which matches "Nothing found" and "Notable" --
+    it would have passed on the bug it was written to catch."""
     for r in settled["results"]:
         if r["status"] == "solved" and not r["exact"]:
-            assert "found" not in r["verdict"].lower()
-            assert "wrong" in r["verdict"].lower() or "not" in r["verdict"].lower()
+            assert r["verdict"] == "Wrong group — sent to review"
+            assert r["tone"] == "bad"
 
 
 def test_a_correct_subset_is_labelled_found(settled):
     hits = [r for r in settled["results"] if r["exact"]]
     assert hits
     for r in hits:
-        assert "found" in r["verdict"].lower()
+        assert r["verdict"] == "Found the group"
+        assert r["tone"] == "good"
 
 
 def test_every_result_carries_a_verdict_and_a_severity(settled):
@@ -503,45 +507,104 @@ def test_every_result_carries_a_verdict_and_a_severity(settled):
         assert r["tone"] in {"good", "warn", "bad"}
 
 
-def test_a_wrong_answer_is_not_shown_as_good_news(settled):
+def test_a_record_with_no_answer_is_never_badged_as_found(settled):
+    """`is_exact` is `sorted([]) == sorted(truth)`, which is True whenever the
+    truth is empty -- so an unresolved record could be badged green with zero
+    components. Only a solved record can have found anything."""
     for r in settled["results"]:
-        if r["status"] == "solved" and not r["exact"]:
-            assert r["tone"] == "bad"
+        if r["status"] != "solved":
+            assert r["verdict"] != "Found the group"
+            assert r["tone"] != "good"
+        if not r["components"]:
+            assert r["verdict"] != "Found the group"
 
 
 # --------------------------------------------------------------------------- #
-# Percentages over a handful of records are arithmetic, not evidence. Asking
-# for one credit and being told "0.0% precision" reads as a measured property
-# of the system rather than one record that happened to fail.
+# Rates over a handful of records are arithmetic, not evidence -- and the thing
+# being rated decides what "a handful" counts. Precision is a rate over
+# *answers*, not over records, and the first version of this guard checked the
+# record count, so 20 records yielding 3 answers still printed "0.0%" in green.
 # --------------------------------------------------------------------------- #
 
-def test_rates_are_withheld_when_there_are_too_few_records_to_mean_anything(client):
+def test_the_recovery_rate_is_withheld_when_there_are_too_few_records(client):
     body = client.post("/api/settlements", json={"limit": 1}).json()
-    assert body["rates_meaningful"] is False
+    assert body["recovery_rate_meaningful"] is False
 
 
-def test_rates_are_reported_once_there_are_enough(client):
+def test_the_precision_rate_is_withheld_when_there_are_too_few_answers(client):
+    """20 records, 3 answers. The record count clears the bar and the answer
+    count does not, and precision is a rate over answers."""
+    body = client.post("/api/settlements", json={"limit": 20}).json()
+    assert body["solved"] < body["min_for_rates"]
+    assert body["precision_meaningful"] is False
+
+
+def test_both_rates_are_reported_once_there_are_enough_of_each(client):
     body = client.post("/api/settlements", json={"limit": 150}).json()
-    assert body["rates_meaningful"] is True
+    assert body["recovery_rate_meaningful"] is True
+    assert body["precision_meaningful"] is True
+
+
+def test_the_threshold_is_sent_to_the_page_rather_than_duplicated_in_it(client):
+    """The page hardcoded 20 while the server owned the constant. Change one
+    and the other silently lies."""
+    from allocation_agent.api import MIN_FOR_RATES
+    body = client.post("/api/settlements", json={"limit": 1}).json()
+    assert body["min_for_rates"] == MIN_FOR_RATES
+    assert "${MIN" not in client.get("/").text
+    assert "above 20" not in client.get("/").text
+
+
+def test_the_counts_behind_each_rate_are_returned_not_recomputed(client):
+    """The page recovered `exact` by multiplying a float rate back by its
+    denominator. The server had the integer all along."""
+    body = client.post("/api/settlements", json={"limit": 150}).json()
+    assert body["exact"] == sum(1 for r in body["results"] if r["exact"])
+    assert body["wrong"] == sum(
+        1 for r in body["results"] if r["status"] == "solved" and not r["exact"])
 
 
 # --------------------------------------------------------------------------- #
-# How many payments an answer uses decides how much it is worth. Measured on
-# ReconRiver: 100% right at one or two payments, 95.7% at three, and 0 of 2
-# right above that -- while the number of subsets of that size available to hit
-# any target by chance runs from ~4,000 at two to ~64,000,000 at five.
+# How many payments an answer uses decides how much it is worth.
 # --------------------------------------------------------------------------- #
 
-def test_an_answer_using_more_payments_than_the_cap_is_not_claimed(client):
+def test_no_answer_uses_more_payments_than_the_solver_permits(client):
+    """Reads the cap rather than repeating it, so moving the cap moves the
+    test instead of quietly making it vacuous."""
+    from allocation_agent.match.solver import SolverConfig
+    cap = SolverConfig().max_subset_size
     body = client.post("/api/settlements", json={"limit": 150}).json()
+    assert any(r["status"] == "solved" for r in body["results"])
     for r in body["results"]:
-        if r["status"] == "solved":
-            assert len(r["components"]) <= 4
+        assert len(r["components"]) <= cap
+
+
+def test_the_refusal_sentence_states_the_cap_the_solver_actually_uses(client):
+    """It said "six payments" while the cap was four. The sentence and the
+    constant must come from the same place."""
+    from allocation_agent.match.solver import SolverConfig
+    cap = SolverConfig().max_subset_size
+    body = client.post("/api/settlements", json={"limit": 150}).json()
+    seen = False
+    for r in body["results"]:
+        if "adds up to this credit" in r["explanation"]:
+            seen = True
+            assert f"{cap} payments or fewer" in r["explanation"]
+            assert f"{cap + 1} payments" in r["explanation"]
+    assert seen, "no refusal sentence exercised"
 
 
 def test_refusing_on_the_size_cap_does_not_claim_nothing_adds_up(settled):
-    """A longer combination often does add up. Saying "no combination sums to
-    this" would be false; the honest statement is that it is not claimed."""
     for r in settled["results"]:
-        if r["status"] == "unresolved" and "adds up" in r["explanation"]:
-            assert "not" in r["explanation"] and "claimed" in r["explanation"]
+        if "adds up to this credit" in r["explanation"]:
+            assert "deliberately not claimed" in r["explanation"]
+
+
+def test_a_pool_refusal_and_a_target_refusal_do_not_share_one_sentence(client):
+    """The solver returns TOO_LARGE for an oversized target as well as an
+    oversized pool. One sentence naming the pool cap is false for the other."""
+    from allocation_agent.match.solver import SolverConfig, SolverStatus, solve_subset
+    r = solve_subset(target_minor=10**13, candidates_minor=[1, 2, 3],
+                     config=SolverConfig(max_target_minor=10**7))
+    assert r.status is SolverStatus.TOO_LARGE
+    assert "candidates" not in r.detail

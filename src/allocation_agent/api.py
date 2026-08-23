@@ -285,25 +285,36 @@ def create_app() -> FastAPI:
             elif r.status is SolverStatus.TOO_LARGE:
                 unresolved += 1
                 bucket["unresolved"] += 1
-                status, expl = ("unresolved",
-                    f"{r.n_considered} candidate payments exceeds the {req.max_pool} cap. "
-                    "Refused rather than truncated to fit.")
+                # TOO_LARGE covers an oversized pool *and* an oversized target.
+                # One sentence naming the pool cap is simply false for the other.
+                if r.detail.startswith("pool"):
+                    expl = (f"{r.n_considered} candidate payments exceeds the "
+                            f"{req.max_pool} cap. Refused rather than truncated to fit.")
+                else:
+                    expl = (f"This credit is larger than the solver will search over "
+                            f"({r.detail}). Refused rather than approximated.")
+                status = "unresolved"
             else:
                 unresolved += 1
                 bucket["unresolved"] += 1
+                cap = min(cfg.max_subset_size, r.n_considered)
+                nxt = cap + 1
                 status, expl = ("unresolved",
-                    f"No group of {cfg.max_subset_size} payments or fewer adds up to this "
-                    f"credit. Longer combinations may exist and are deliberately not "
-                    f"claimed — there are millions of ways to pick six payments out of "
-                    f"{r.n_considered}, so one that happens to hit the total is a "
-                    f"coincidence rather than evidence.")
+                    f"No group of {cap} payments or fewer adds up to this credit. "
+                    f"Longer combinations may exist and are deliberately not claimed — "
+                    f"there are far more ways to pick {nxt} payments out of "
+                    f"{r.n_considered} than {cap}, so a longer sum that happens to hit "
+                    f"the total is a coincidence rather than evidence.")
 
             # The label is a judgement about the answer, so it is made here.
             # Deriving it from `status` alone in the page produced a badge
             # reading "Found the group" above a sentence explaining that the
             # group was wrong -- `solved` means a subset balances, not that it
             # is the right subset.
-            if is_exact:
+            # `is_exact` compares two sorted lists, so an empty answer against
+            # an empty truth is True. Testing it before `status` badged a
+            # record with no answer at all as "Found the group".
+            if status == "solved" and is_exact:
                 verdict, tone = "Found the group", "good"
             elif status == "solved":
                 verdict, tone = "Wrong group — sent to review", "bad"
@@ -334,10 +345,18 @@ def create_app() -> FastAPI:
             "precision": exact / solved if solved else 0.0,
             "wrong_set_rate": wrong / n if n else 0.0,
             "unreachable": unreachable,
-            # A percentage over a handful of records is arithmetic, not
-            # evidence: one credit that fails reads as "0.0% precision", which
-            # looks like a measured property of the system.
-            "rates_meaningful": n >= MIN_FOR_RATES,
+            # A percentage over a handful is arithmetic, not evidence -- and
+            # *what* is being rated decides what counts as a handful. Recovery
+            # is a rate over records; precision is a rate over answers. Gating
+            # both on the record count let 20 records yielding 3 answers print
+            # "0.0% of the groups it named were right" as though measured.
+            "min_for_rates": MIN_FOR_RATES,
+            "recovery_rate_meaningful": n >= MIN_FOR_RATES,
+            "precision_meaningful": solved >= MIN_FOR_RATES,
+            # The counts behind each rate, so the page never has to recover an
+            # integer by multiplying a float back by its denominator.
+            "exact": exact,
+            "wrong": wrong,
             "by_batch_size": [dict(size=k, **v) for k, v in sorted(sizes.items())],
             "seconds": round(time.perf_counter() - started, 3),
             "results": out,

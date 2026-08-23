@@ -68,7 +68,7 @@ class SolverConfig:
     max_target_minor: int = 5_000_000_000
     """Guards the DP table. The table is ``target + tolerance`` wide."""
 
-    max_subset_size: int = 4
+    max_subset_size: int = 3
     """Largest batch the solver will claim.
 
     A policy about evidence, not a tuned parameter. The number of subsets
@@ -81,19 +81,30 @@ class SolverConfig:
     | 1 | 7 | 7 | 100.0% | ~93 |
     | 2 | 62 | 62 | 100.0% | ~4,371 |
     | 3 | 46 | 44 | 95.7% | ~138,415 |
-    | 4 | 1 | 0 | 0.0% | ~3,612,280 |
-    | 5 | 1 | 0 | 0.0% | ~64,446,024 |
+    | 4 | 1 | **0** | **0.0%** | ~3,612,280 |
+    | 5 | 1 | **0** | **0.0%** | ~64,446,024 |
 
-    Lowering the cap from 8 cost **no coverage at all** -- every correct answer
-    used three payments or fewer, so tightening removed only wrong ones.
+    Every correct answer used three payments or fewer, so tightening the cap
+    costs **no coverage at all** -- it removes only wrong answers:
 
-    **Two things this data cannot tell you.** Only two answers exceeded three
-    payments, so the 0% is two records rather than a rate. And ReconRiver's own
-    batches never exceed three, so nothing here validates a larger cap; a book
-    with genuinely larger settlement batches needs this raised, and needs its
-    own measurement to say where. The default is set one above the largest
-    batch this data contains rather than exactly at it, so it is not simply
-    fitted to the observed maximum."""
+    | cap | answers | right | wrong | precision | coverage |
+    |---|---|---|---|---|---|
+    | 8 | 117 | 113 | 4 | 96.6% | 75.3% |
+    | 4 | 116 | 113 | 3 | 97.4% | 75.3% |
+    | 3 | 115 | 113 | 2 | **98.3%** | 75.3% |
+
+    This shipped at 4 first, on the reasoning that capping at 3 would be
+    fitting to the largest batch the data happens to contain. That was wrong in
+    a way worth recording: a cap of 4 admitted exactly one answer and that
+    answer was wrong. Declining to fit the data is not a virtue when the only
+    thing the extra room admits is a mistake.
+
+    **What this data cannot tell you.** The 0% above three payments is *two
+    records*, not a rate. ReconRiver's own batches never exceed three, so
+    nothing here validates any larger cap -- a book with genuinely larger
+    settlement batches needs this raised, and needs its own measurement to say
+    where. The cap is a constructor argument for exactly that reason.
+    """
 
     require_unique: bool = True
     """Refuse when a second subset of the same size reaches the same sum."""
@@ -180,7 +191,7 @@ def solve_subset(
     if n > cfg.max_candidates:
         return SolverResult(
             SolverStatus.TOO_LARGE, [], target_minor, n,
-            f"{n} candidates exceeds the cap of {cfg.max_candidates}",
+            f"pool of {n} exceeds the cap of {cfg.max_candidates}",
         )
     if target_minor > cfg.max_target_minor:
         return SolverResult(
