@@ -31,6 +31,9 @@ from pydantic import BaseModel, Field
 from allocation_agent.decide.gate import GateConfig, Outcome, decide
 from allocation_agent.decide.narrate import Narrator, diagnose_residual
 from allocation_agent.match.blocker import BlockingConfig, block
+from allocation_agent.adapters.csv_upload import (
+    UploadError, parse_bank_csv, parse_ledger_csv,
+)
 from allocation_agent.match.features import build_key_stats, featurise
 from allocation_agent.match.multiplicity import featurise_multiplicity
 from allocation_agent.match.solver import SolverConfig, SolverStatus, solve_subset
@@ -59,6 +62,7 @@ def _artifacts_dir() -> Path:
 ARTIFACTS = _artifacts_dir()
 REQUIRED_COLUMNS = {"account", "amount", "date"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_UPLOAD_ROWS = 20_000
 
 
 class RunRequest(BaseModel):
@@ -145,7 +149,7 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        return _PAGE
+        return _page()
 
     @app.get("/api/health")
     def health() -> dict:
@@ -177,50 +181,22 @@ def create_app() -> FastAPI:
         started = time.perf_counter()
 
         for rec in records:
-            cands = sorted(block(rec, state.index, bcfg))
             truth_key, truly_mult = state.truth.get(rec.record_id, ("", False))
+            # Same function the upload path calls. One matching path, so the
+            # measured demo numbers say something about uploaded files too.
+            r = _match_one(state, rec, state.index, state.key_stats, gate,
+                           req.mult_threshold)
+            audit.record(rec.record_id, r["decision"], keys=r["keys"],
+                         n_candidates=r["n_candidates"], path=r["path"],
+                         evidence=r["evidence"])
+            summary[r["outcome"]] += 1
 
-            if not cands:
-                d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
-                audit.record(rec.record_id, d, keys=[], n_candidates=0, path="blocked")
-                summary["no_candidate"] += 1
-                exceptions.append(_exception(rec, "no_candidate",
-                                             "Nothing in the ledger is close enough to consider.", 0))
-                continue
-
-            p_mult = _p_multiple(state, rec, cands)
-            if p_mult >= req.mult_threshold:
-                d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
-                audit.record(rec.record_id, d, keys=[], n_candidates=len(cands),
-                             path="multiplicity", evidence={"p_multiple": round(p_mult, 4)})
-                summary["suspected_grouped"] += 1
-                exceptions.append(_exception(
-                    rec, "suspected_grouped",
-                    f"Looks like one payment covering several ledger entries "
-                    f"(confidence {p_mult:.0%}). Routed for review.", len(cands)))
-                continue
-
-            X = np.vstack([featurise(rec, state.key_stats[k], n_candidates=len(cands))
-                           for k in cands if k in state.key_stats])
-            scores = state.ranker.score(X)
-            order = np.argsort(-scores)
-            chosen = cands[int(order[0])]
-            margin = float(scores[order[0]] - scores[order[1]]) if len(order) > 1 else 1.0
-            confidence = float(1.0 / (1.0 + np.exp(-margin)))
-
-            d = decide(confidence=confidence, amount_minor=rec.amount_minor, config=gate)
-            audit.record(rec.record_id, d, keys=[chosen], n_candidates=len(cands),
-                         path="ranked", evidence={"margin": round(margin, 4)})
-
-            if d.outcome is Outcome.POST:
-                summary["posted"] += 1
-                posted_correct += (not truly_mult and chosen == truth_key)
+            if r["outcome"] == "posted":
+                posted_correct += (not truly_mult and r["keys"][0] == truth_key)
             else:
-                summary["queued"] += 1
-                exceptions.append(_exception(
-                    rec, "below_threshold",
-                    f"Best candidate scored {confidence:.0%}, below the "
-                    f"{d.threshold_required:.0%} required for this amount.", len(cands)))
+                exceptions.append({**_exception(rec, r["outcome"], r["explanation"],
+                                                r["n_candidates"]),
+                                   "stage": r["stage"]})
 
         audit.commit(); audit.finish_run(run_id)
         elapsed = time.perf_counter() - started
@@ -345,6 +321,84 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"no run {run_id}")
         return {"run_id": run_id, "decisions": rows}
 
+    @app.post("/api/reconcile")
+    async def reconcile(bank: UploadFile = File(...),
+                        ledger: UploadFile = File(...)) -> dict:
+        """Reconcile a bank CSV against a ledger CSV the visitor supplies.
+
+        Same matching path as the demo -- deliberately, because a separate code
+        path for user data would make the demo's measured numbers evidence for
+        nothing but the demo.
+
+        **No precision is reported here and that is not an omission.** The demo
+        can score itself because BenchRec is labelled; an uploaded file has no
+        answer key, so any accuracy figure would be invented. What is reported
+        is what it decided and why, for the visitor to check against what they
+        already know about their own data.
+        """
+        if not state.ready:
+            raise HTTPException(503, f"models not loaded: {state.error or 'unknown'}")
+
+        async def read(f: UploadFile, label: str) -> str:
+            raw = await f.read()
+            if len(raw) > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    400, f"the {label} file exceeds "
+                         f"{MAX_UPLOAD_BYTES // 1024 // 1024} MB")
+            return raw.decode("utf-8", "replace")
+
+        try:
+            records = parse_bank_csv(await read(bank, "bank"))
+            rows = parse_ledger_csv(await read(ledger, "ledger"))
+        except UploadError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        if len(records) > MAX_UPLOAD_ROWS:
+            raise HTTPException(400, f"the bank file has {len(records)} rows; "
+                                     f"this demo caps at {MAX_UPLOAD_ROWS}")
+
+        index, key_stats = KeyIndex(rows), build_key_stats(rows)
+        gate = GateConfig(policy_version="v0.1")
+        run_id = audit.start_run(RunConfig(
+            approved_by="uploader", blocking={"date_slack_days": 7},
+            gate={"base": gate.base, "slope": gate.slope},
+            policy_version="v0.1", notes=f"uploaded: {bank.filename} x {ledger.filename}"))
+
+        summary = {"posted": 0, "queued": 0, "no_candidate": 0, "suspected_grouped": 0}
+        results = []
+        started = time.perf_counter()
+
+        for rec in records:
+            r = _match_one(state, rec, index, key_stats, gate, 0.5)
+            audit.record(rec.record_id, r["decision"], keys=r["keys"],
+                         n_candidates=r["n_candidates"], path=r["path"],
+                         evidence=r["evidence"])
+            summary[r["outcome"]] += 1
+            results.append({
+                "record_id": rec.record_id,
+                "account": rec.account,
+                "amount": round(rec.amount_minor / 100, 2),
+                "outcome": r["outcome"],
+                "matched_key": r["keys"][0] if r["keys"] else None,
+                "confidence": r["confidence"],
+                "n_candidates": r["n_candidates"],
+                "explanation": r["explanation"],
+            })
+
+        audit.commit(); audit.finish_run(run_id)
+        return {
+            "run_id": run_id,
+            "n_records": len(records),
+            "n_ledger_rows": len(rows),
+            "summary": summary,
+            "seconds": round(time.perf_counter() - started, 3),
+            "llm_calls_on_matching_path": 0,
+            "caveat": "Your file has no ground truth, so no precision is reported — "
+                      "any accuracy number here would be invented. Check the matches "
+                      "against what you already know about this data.",
+            "results": results,
+        }
+
     @app.post("/api/upload")
     async def upload(file: UploadFile = File(...)) -> dict:
         if not (file.filename or "").lower().endswith(".csv"):
@@ -379,6 +433,75 @@ def _sum_sentence(state: _State, st: dict, chosen: list[str]) -> str:
             f"({len(chosen)} payment{'s' if len(chosen) != 1 else ''})")
 
 
+
+def _match_one(state: _State, rec: BankRecord, index, key_stats, gate,
+               mult_threshold: float) -> dict:
+    """Run one record through the whole matching path.
+
+    Extracted so an uploaded file goes through *identical* code to the demo.
+    A separate path for user data would make the demo's numbers evidence for
+    nothing but the demo.
+    """
+    cands = sorted(block(rec, index, BlockingConfig(date_slack_days=7)))
+
+    if not cands:
+        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
+        return {"stage": "narrowing", "outcome": "no_candidate", "decision": d,
+                "keys": [], "n_candidates": 0, "path": "blocked", "evidence": None,
+                "confidence": None,
+                "explanation": "Nothing in the ledger is close enough to consider — "
+                               "no entry shares this account within a week of this date."}
+
+    p_mult = _p_multiple_with(state, rec, cands, key_stats)
+    if p_mult >= mult_threshold:
+        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
+        return {"stage": "grouping", "outcome": "suspected_grouped", "decision": d,
+                "keys": [], "n_candidates": len(cands), "path": "multiplicity",
+                "evidence": {"p_multiple": round(p_mult, 4)}, "confidence": None,
+                "explanation": f"This looks like one payment covering several ledger "
+                               f"entries ({p_mult:.0%} confidence), so a single match "
+                               f"would be wrong. Sent for review."}
+
+    usable = [k for k in cands if k in key_stats]
+    if not usable:
+        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
+        return {"stage": "narrowing", "outcome": "no_candidate", "decision": d,
+                "keys": [], "n_candidates": 0, "path": "blocked", "evidence": None,
+                "confidence": None,
+                "explanation": "Nothing in the ledger is close enough to consider."}
+
+    X = np.vstack([featurise(rec, key_stats[k], n_candidates=len(usable)) for k in usable])
+    scores = state.ranker.score(X)
+    order = np.argsort(-scores)
+    chosen = usable[int(order[0])]
+    margin = float(scores[order[0]] - scores[order[1]]) if len(order) > 1 else 1.0
+    confidence = float(1.0 / (1.0 + np.exp(-margin)))
+    d = decide(confidence=confidence, amount_minor=rec.amount_minor, config=gate)
+
+    if d.outcome is Outcome.POST:
+        expl = (f"Matched to {chosen}. It was the best of {len(usable)} nearby ledger "
+                f"entries by a clear enough margin ({confidence:.0%}) to post without "
+                f"a human looking.")
+    else:
+        expl = (f"Best guess is {chosen}, but at {confidence:.0%} it is under the "
+                f"{d.threshold_required:.0%} this amount requires. Sent for review "
+                f"rather than posted.")
+
+    return {"stage": "ranking", "outcome": "posted" if d.outcome is Outcome.POST else "queued",
+            "decision": d, "keys": [chosen], "n_candidates": len(usable), "path": "ranked",
+            "evidence": {"margin": round(margin, 4)}, "confidence": confidence,
+            "explanation": expl}
+
+
+def _p_multiple_with(state: _State, rec: BankRecord, cands: list[str], key_stats) -> float:
+    amts = [a for k in cands if k in key_stats for a in key_stats[k].amounts]
+    has_exact = rec.amount_minor in amts if amts else False
+    min_delta = min((abs(rec.amount_minor - a) for a in amts), default=1e12)
+    f = featurise_multiplicity(rec, n_candidates=len(cands), has_exact=has_exact,
+                               min_delta_minor=float(min_delta), prior=state.prior)
+    return float(state.detector.predict_proba(f.reshape(1, -1))[0])
+
+
 def _p_multiple(state: _State, rec: BankRecord, cands: list[str]) -> float:
     amts = [a for k in cands for a in state.key_stats[k].amounts if k in state.key_stats]
     has_exact = rec.amount_minor in amts if amts else False
@@ -394,178 +517,16 @@ def _exception(rec: BankRecord, reason: str, explanation: str, n_candidates: int
             "n_candidates": n_candidates}
 
 
-_PAGE = """<!doctype html><meta charset=utf-8><title>Allocation Agent</title>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<style>
-:root{--bg:#0d1117;--fg:#e6edf3;--dim:#8b949e;--line:#21262d;--card:#161b22;--ok:#3fb950;--warn:#d29922;--bad:#f85149}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
-font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;padding:2rem 1.25rem}
-.w{max-width:60rem;margin:0 auto}h1{font-size:1.3rem;margin:0 0 .3rem}
-p.sub{color:var(--dim);margin:0 0 1.25rem}
-button{background:#238636;color:#fff;border:0;padding:.6rem 1.1rem;border-radius:6px;
-cursor:pointer;font:inherit}button:disabled{opacity:.5;cursor:default}
-label{color:var(--dim);margin-right:1rem}input,select{background:var(--card);color:var(--fg);
-border:1px solid var(--line);border-radius:6px;padding:.4rem .6rem;font:inherit}
-.tabs{display:flex;gap:.25rem;border-bottom:1px solid var(--line);margin:0 0 1.25rem}
-.tabs button{background:0;color:var(--dim);border:0;border-bottom:2px solid transparent;
-padding:.5rem .9rem;border-radius:0}
-.tabs button[aria-selected=true]{color:var(--fg);border-bottom-color:#238636}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:1px;
-background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:1.5rem 0}
-.c{background:var(--card);padding:.9rem 1rem}.c .n{font-size:1.5rem;font-weight:600}
-.c .l{color:var(--dim);font-size:.8rem}
-table{width:100%;border-collapse:collapse;font-size:.85rem;margin-top:.5rem}
-th{text-align:left;color:var(--dim);font-weight:500;border-bottom:1px solid var(--line);padding:.5rem .6rem .5rem 0}
-td{padding:.5rem .6rem .5rem 0;border-bottom:1px solid var(--line);vertical-align:top}
-.tag{font-size:.72rem;padding:.15rem .45rem;border-radius:4px;border:1px solid currentColor;white-space:nowrap}
-.g{color:var(--ok)}.y{color:var(--warn)}.r{color:var(--bad)}
-.set{border:1px solid var(--line);border-radius:8px;background:var(--card);padding:.9rem 1rem;margin:.6rem 0}
-.set .hd{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap}
-.sum{font-size:1.05rem;margin:.5rem 0 .1rem;letter-spacing:-.01em}
-.sum b{color:var(--ok)}
-.parts{list-style:none;padding:0;margin:.5rem 0 0}
-.parts li{display:flex;justify-content:space-between;gap:1rem;color:var(--dim);font-size:.82rem;
-padding:.15rem 0;border-top:1px dashed var(--line)}
-.why{color:var(--dim);font-size:.82rem;margin:.5rem 0 0}
-.hide{display:none}
-</style>
-<div class=w>
-<h1>Allocation Agent</h1>
+_PAGE_PATH = Path(__file__).resolve().parent / "static" / "index.html"
 
-<div class=tabs>
-  <button id=t1 aria-selected=true>Matching</button>
-  <button id=t2 aria-selected=false>Grouped settlements</button>
-</div>
 
-<section id=v1>
-<p class=sub>Matches bank records to ledger allocation keys. Runs on
-<b>held-out records the models never saw in training</b>, so the precision below is
-measured against ground truth, not asserted.</p>
-<div>
-  <label>records <input id=n type=number value=500 min=1 max=4000 style=width:6rem></label>
-  <label><input id=all type=checkbox> review everything</label>
-  <button id=go>Run</button>
-</div>
-<div id=out></div>
-</section>
+def _page() -> str:
+    """Read the page from disk each request.
 
-<section id=v2 class=hide>
-<p class=sub>One bank credit, many payments. The solver is given the amount and a pool of
-~100 candidate payments and must recover which subset produced it &mdash;
-<b>the batch identifier is never passed to it</b>. A subset that balances is not proof
-it is the right subset, so coverage and precision are reported separately.</p>
-<div>
-  <label>settlements <input id=sn type=number value=150 min=1 max=150 style=width:5rem></label>
-  <label>pool cap <input id=sp type=number value=128 min=2 max=512 style=width:5rem></label>
-  <button id=sgo>Solve</button>
-</div>
-<div id=sout></div>
-</section>
-</div>
-<script>
-const $=s=>document.querySelector(s), fmt=n=>n.toLocaleString(),
-      pct=x=>(x*100).toFixed(1)+'%',
-      money=n=>n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-
-function tab(sel){
-  $('#t1').setAttribute('aria-selected', sel===1); $('#t2').setAttribute('aria-selected', sel===2);
-  $('#v1').classList.toggle('hide', sel!==1); $('#v2').classList.toggle('hide', sel!==2);
-}
-$('#t1').onclick=()=>tab(1); $('#t2').onclick=()=>tab(2);
-
-async function post(url, body, btn, label){
-  btn.disabled=true; const was=btn.textContent; btn.textContent='running...';
-  try{
-    const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify(body)});
-    if(!r.ok) throw new Error((await r.json()).detail||r.statusText);
-    return await r.json();
-  } finally { btn.disabled=false; btn.textContent=was; }
-}
-
-$('#go').onclick=async()=>{
-  $('#out').innerHTML='';
-  try{ render(await post('/api/run',{limit:+$('#n').value, review_all:$('#all').checked}, $('#go'))); }
-  catch(e){ $('#out').innerHTML='<p class=r>'+e.message+'</p>'; }
-};
-
-function render(d){
-  const s=d.summary;
-  $('#out').innerHTML=`
-  <div class=grid>
-    <div class=c><div class=n>${fmt(d.n_records)}</div><div class=l>records</div></div>
-    <div class="c"><div class="n g">${pct(d.precision_of_posted)}</div><div class=l>precision of posted</div></div>
-    <div class=c><div class=n>${pct(d.straight_through_rate)}</div><div class=l>straight-through</div></div>
-    <div class=c><div class=n>${fmt(Math.round(d.records_per_second))}</div><div class=l>records/sec</div></div>
-    <div class=c><div class=n>${d.llm_calls_on_matching_path}</div><div class=l>LLM calls</div></div>
-  </div>
-  <p class=sub>posted ${fmt(s.posted)} &middot; queued ${fmt(s.queued)} &middot;
-  suspected grouped ${fmt(s.suspected_grouped)} &middot; no candidate ${fmt(s.no_candidate)}
-  &middot; <b>${fmt(s.posted+s.queued+s.suspected_grouped+s.no_candidate)} of ${fmt(d.n_records)} accounted for</b>
-  &middot; run <code>${d.run_id}</code></p>
-  <h3 style="font-size:1rem;margin:1.5rem 0 0">Exceptions (${fmt(d.n_exceptions)})</h3>
-  <table><tr><th>record</th><th>amount</th><th>reason</th><th>explanation</th></tr>
-  ${d.exceptions.slice(0,40).map(e=>`<tr><td>${e.record_id}</td>
-   <td style=text-align:right>${money(e.amount)}</td>
-   <td><span class="tag ${e.reason==='suspected_grouped'?'y':''}">${e.reason}</span></td>
-   <td>${e.explanation}</td></tr>`).join('')}
-  </table>`;
-}
-
-$('#sgo').onclick=async()=>{
-  $('#sout').innerHTML='';
-  try{ renderSettlements(await post('/api/settlements',
-        {limit:+$('#sn').value, max_pool:+$('#sp').value}, $('#sgo'))); }
-  catch(e){ $('#sout').innerHTML='<p class=r>'+e.message+'</p>'; }
-};
-
-function renderSettlements(d){
-  const cls={solved:'g',ambiguous:'y',unresolved:'y'};
-  // Multi-payment recoveries first: splitting one credit across several payments
-  // is the problem this solver exists for, and a one-payment credit is an exact
-  // match rather than a subset-sum. Then wrong answers, ties, refusals -- the
-  // failures stay in the same list, below the counts, not on a separate page.
-  const rank=r=>r.exact?(r.components.length>1?0:1)
-                :(r.status==='solved'?2:r.status==='ambiguous'?3:4);
-  const rows=[...d.results].sort((a,b)=>rank(a)-rank(b));
-  $('#sout').innerHTML=`
-  <div class=grid>
-    <div class=c><div class=n>${fmt(d.n_settlements)}</div><div class=l>credits</div></div>
-    <div class="c"><div class="n g">${pct(d.precision)}</div><div class=l>precision of answers</div></div>
-    <div class=c><div class=n>${pct(d.exact_recovery_rate)}</div><div class=l>coverage</div></div>
-    <div class="c"><div class="n y">${fmt(d.ambiguous)}</div><div class=l>ties refused</div></div>
-    <div class=c><div class=n>${fmt(d.unresolved)}</div><div class=l>unresolved</div></div>
-    <div class=c><div class=n>${d.seconds}s</div><div class=l>total</div></div>
-  </div>
-  <p class=sub><b>coverage</b> = credits whose recorded batch it recovered &middot;
-  <b>precision</b> = of the answers it gave, how many were the recorded batch &middot;
-  balancing-but-wrong ${pct(d.wrong_set_rate)}</p>
-  <h3 style="font-size:1rem;margin:1.5rem 0 0">By how many payments the batch really had</h3>
-  <p class=sub style="margin:.2rem 0 0;font-size:.82rem">A one-payment credit is an exact
-  match, not a grouping problem. <b>unreachable</b> = the true batch was never in the
-  candidate pool, or the pool blew the cap &mdash; a blocking limit, not a solver one.</p>
-  <table><tr><th>true batch</th><th>credits</th><th>recovered</th><th>wrong</th>
-  <th>ties refused</th><th>unresolved</th><th>unreachable</th></tr>
-  ${d.by_batch_size.map(b=>`<tr>
-    <td>${b.size} payment${b.size===1?'':'s'}</td><td>${b.n}</td>
-    <td class="${b.recovered?'g':''}">${b.recovered}</td>
-    <td class="${b.wrong?'r':''}">${b.wrong}</td>
-    <td class="${b.ambiguous?'y':''}">${b.ambiguous}</td>
-    <td>${b.unresolved}</td><td style="color:var(--dim)">${b.unreachable}</td></tr>`).join('')}
-  </table>
-  ${rows.map(r=>`
-  <div class=set>
-    <div class=hd>
-      <span>${r.settlement_id} &middot; <span class=y>${r.currency}</span> ${money(r.amount)}</span>
-      <span><span class="tag ${r.exact?'g':cls[r.status]||''}">${r.exact?'recovered':r.status}</span>
-      <span style="color:var(--dim);font-size:.78rem"> pool ${r.pool_size}</span></span>
-    </div>
-    ${r.components.length?`<div class=sum><b>${money(r.amount)}</b> = ${
-      r.components.map(c=>money(c.amount)).join(' + ')}</div>
-    <ul class=parts>${r.components.map(c=>
-      `<li><span>${c.payment_id}${c.order_id?' &middot; '+c.order_id:''}</span>
-       <span>${money(c.amount)}</span></li>`).join('')}</ul>`:''}
-    <p class=why>${r.explanation}</p>
-  </div>`).join('')}`;
-}
-</script>"""
+    Costs a few microseconds on a route that runs once per visitor, and means
+    the demo page can be corrected without a redeploy of the matching code.
+    """
+    try:
+        return _PAGE_PATH.read_text()
+    except OSError as exc:  # noqa: BLE001
+        return f"<pre>demo page missing: {exc}</pre>"

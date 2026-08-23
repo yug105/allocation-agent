@@ -262,3 +262,118 @@ def test_a_batch_that_is_not_inside_the_candidate_pool_is_counted_as_unreachable
     assert body["unreachable"] <= body["n_settlements"]
     for r in body["by_batch_size"]:
         assert r["unreachable"] <= r["n"]
+
+
+# --------------------------------------------------------------------------- #
+# Bringing your own data.
+#
+# The previous version of /api/upload validated a CSV and returned
+# "reconciliation of uploaded files is not wired yet". So a judge could not
+# check the system against a file whose answers they already knew -- which is
+# the only way to actually believe a demo that scores itself.
+# --------------------------------------------------------------------------- #
+
+BANK_CSV = ("id,account,amount,date\n"
+            "b1,ACC-1,1250.00,2026-03-01\n"
+            "b2,ACC-2,80.50,2026-03-02\n"
+            "b3,ACC-9,9999.00,2026-03-02\n")
+
+LEDGER_CSV = ("invoice,account,amount,date\n"
+              "INV-1,ACC-1,1250.00,2026-03-01\n"
+              "INV-2,ACC-2,80.50,2026-03-03\n"
+              "INV-3,ACC-2,4000.00,2026-03-03\n")
+
+
+def _files(bank=BANK_CSV, ledger=LEDGER_CSV):
+    return {"bank": ("bank.csv", io.BytesIO(bank.encode()), "text/csv"),
+            "ledger": ("ledger.csv", io.BytesIO(ledger.encode()), "text/csv")}
+
+
+def test_an_uploaded_pair_is_actually_reconciled(client):
+    body = client.post("/api/reconcile", files=_files()).json()
+    assert body["n_records"] == 3
+    assert len(body["results"]) == 3
+
+
+def test_the_obvious_match_is_found(client):
+    """Same account, same amount, same day. If this does not match, nothing does."""
+    rows = {r["record_id"]: r for r in client.post(
+        "/api/reconcile", files=_files()).json()["results"]}
+    assert rows["b1"]["matched_key"] == "INV-1"
+
+
+def test_a_record_with_nothing_to_match_says_so_rather_than_guessing(client):
+    rows = {r["record_id"]: r for r in client.post(
+        "/api/reconcile", files=_files()).json()["results"]}
+    assert rows["b3"]["matched_key"] is None
+    assert "nothing" in rows["b3"]["explanation"].lower()
+
+
+def test_every_uploaded_record_is_accounted_for(client):
+    body = client.post("/api/reconcile", files=_files()).json()
+    assert sum(body["summary"].values()) == body["n_records"]
+
+
+def test_no_precision_is_claimed_on_data_with_no_answer_key(client):
+    """The demo can report precision because BenchRec is labelled. An uploaded
+    file is not, and inventing a score for it would be the dishonest part."""
+    body = client.post("/api/reconcile", files=_files()).json()
+    assert "precision" not in body
+    assert "ground truth" in body["caveat"].lower() or "no labels" in body["caveat"].lower()
+
+
+def test_each_result_explains_itself_in_plain_language(client):
+    for r in client.post("/api/reconcile", files=_files()).json()["results"]:
+        assert r["explanation"] and not any(
+            j in r["explanation"] for j in ("no_candidate", "below_threshold", "MULT"))
+
+
+def test_a_broken_file_reports_the_row_rather_than_failing_opaquely(client):
+    bad = "id,account,amount,date\nb1,ACC-1,1.005,2026-03-01\n"
+    r = client.post("/api/reconcile", files=_files(bank=bad))
+    assert r.status_code == 400
+    assert "row 2" in r.json()["detail"]
+
+
+def test_a_missing_column_is_named(client):
+    r = client.post("/api/reconcile", files=_files(bank="id,account,amount\nb1,A,1.00\n"))
+    assert r.status_code == 400
+    assert "date" in r.json()["detail"]
+
+
+def test_the_uploaded_run_is_written_to_the_same_audit_log(client):
+    """An uploaded run is a real run. It gets a run id and an audit trail, or
+    the audit story only holds for the demo."""
+    body = client.post("/api/reconcile", files=_files()).json()
+    trail = client.get(f"/api/run/{body['run_id']}/audit").json()
+    assert len(trail["decisions"]) == body["n_records"]
+
+
+# --------------------------------------------------------------------------- #
+# The page is what a judge actually meets. It gets the same treatment as the
+# API: the fields it reads must exist, and the words it shows must be words.
+# --------------------------------------------------------------------------- #
+
+def test_the_page_only_reads_fields_the_meta_endpoint_returns(client):
+    """The page once read m.n_keys and m.n_train, neither of which exists, so
+    two of the three dataset figures silently rendered as nothing."""
+    import re
+    page = client.get("/").text
+    meta = client.get("/api/meta").json()
+    for field in set(re.findall(r"\bm\.([a-z_]+)", page)):
+        assert field in meta, f"page reads m.{field}, which /api/meta does not return"
+
+
+def test_no_internal_outcome_name_is_shown_to_a_visitor(client):
+    """suspected_grouped is a good variable name and a terrible thing to show
+    somebody who has only read the problem statement."""
+    page = client.get("/").text
+    shown = page.split("<script>")[0]
+    for enum in ("no_candidate", "suspected_grouped", "below_threshold", "straight-through"):
+        assert enum not in shown, f"{enum} appears in the visible page"
+
+
+def test_the_page_can_reach_every_endpoint_a_visitor_needs(client):
+    page = client.get("/").text
+    for route in ("/api/meta", "/api/run", "/api/settlements", "/api/reconcile"):
+        assert route in page, f"{route} is built but unreachable from the page"

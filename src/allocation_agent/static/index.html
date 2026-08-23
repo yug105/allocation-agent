@@ -1,0 +1,388 @@
+<!doctype html><meta charset=utf-8><title>Allocation Agent</title>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<style>
+:root{--bg:#0d1117;--fg:#e6edf3;--dim:#8b949e;--faint:#6e7681;--line:#21262d;
+--card:#161b22;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--accent:#58a6ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);padding:2rem 1.25rem;
+font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+.w{max-width:64rem;margin:0 auto}
+h1{font-size:1.35rem;margin:0 0 .4rem}
+h2{font-size:1rem;margin:2rem 0 .6rem;font-weight:600}
+h2 .num{color:var(--faint);margin-right:.5rem;font-weight:400}
+p{margin:0 0 .8rem}
+.lede{font-size:1.02rem;max-width:46rem}
+.dim{color:var(--dim)}.faint{color:var(--faint);font-size:.82rem}
+button{background:#238636;color:#fff;border:0;padding:.6rem 1.1rem;border-radius:6px;
+cursor:pointer;font:inherit}button:disabled{opacity:.5;cursor:default}
+label{color:var(--dim);margin-right:1rem}
+input,select{background:var(--card);color:var(--fg);border:1px solid var(--line);
+border-radius:6px;padding:.4rem .6rem;font:inherit}
+input[type=file]{padding:.35rem;max-width:100%}
+.tabs{display:flex;gap:.25rem;border-bottom:1px solid var(--line);margin:1.5rem 0 1.25rem;
+flex-wrap:wrap}
+.tabs button{background:0;color:var(--dim);border:0;border-bottom:2px solid transparent;
+padding:.5rem .9rem;border-radius:0}
+.tabs button[aria-selected=true]{color:var(--fg);border-bottom-color:#238636}
+.box{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:1rem 1.15rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:1px;
+background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:1rem 0}
+.c{background:var(--card);padding:.9rem 1rem}
+.c .n{font-size:1.5rem;font-weight:600;font-variant-numeric:tabular-nums}
+.c .l{color:var(--dim);font-size:.8rem}
+/* the pipeline: what happens to one record, in order */
+.pipe{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.6rem;margin:.8rem 0}
+.step{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:.75rem .85rem;
+position:relative}
+.step .k{color:var(--faint);font-size:.72rem;letter-spacing:.06em;text-transform:uppercase}
+.step .t{font-weight:600;margin:.15rem 0 .25rem}
+.step .d{color:var(--dim);font-size:.8rem;line-height:1.45}
+.step .out{margin-top:.5rem;padding-top:.5rem;border-top:1px dashed var(--line);
+font-size:.82rem;font-variant-numeric:tabular-nums;min-height:1.5rem}
+.step .out b{color:var(--fg)}
+table{width:100%;border-collapse:collapse;font-size:.85rem;margin-top:.5rem}
+th{text-align:left;color:var(--dim);font-weight:500;border-bottom:1px solid var(--line);
+padding:.5rem .6rem .5rem 0}
+td{padding:.5rem .6rem .5rem 0;border-bottom:1px solid var(--line);vertical-align:top}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.tag{font-size:.72rem;padding:.15rem .45rem;border-radius:4px;border:1px solid currentColor;
+white-space:nowrap;display:inline-block}
+.g{color:var(--ok)}.y{color:var(--warn)}.r{color:var(--bad)}.b{color:var(--accent)}
+.set{border:1px solid var(--line);border-radius:8px;background:var(--card);
+padding:.9rem 1rem;margin:.6rem 0}
+.set .hd{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.sum{font-size:1.05rem;margin:.5rem 0 .1rem}.sum b{color:var(--ok)}
+.parts{list-style:none;padding:0;margin:.5rem 0 0}
+.parts li{display:flex;justify-content:space-between;gap:1rem;color:var(--dim);
+font-size:.82rem;padding:.15rem 0;border-top:1px dashed var(--line)}
+.why{color:var(--dim);font-size:.82rem;margin:.5rem 0 0}
+.hide{display:none}
+.scroll{overflow-x:auto}
+.note{border-left:2px solid var(--line);padding-left:.8rem;color:var(--dim);font-size:.85rem}
+ol.plain{padding-left:1.2rem;color:var(--dim);font-size:.88rem}
+ol.plain li{margin:.3rem 0}
+code{background:#1c2128;padding:.1rem .3rem;border-radius:4px;font-size:.85em}
+</style>
+<div class=w>
+
+<h1>Allocation Agent</h1>
+<p class="lede dim">Money lands in a bank account. Somewhere in the books there is a
+record of what it was for. This connects them — and when one payment covers
+<i>several</i> records, it notices that instead of guessing.</p>
+
+<!-- ── what data is in here, before anyone clicks anything ────────────── -->
+<h2><span class=num>1</span>What it is running on</h2>
+<div class=box id=data>loading…</div>
+
+<!-- ── the workflow, as a sequence ────────────────────────────────────── -->
+<h2><span class=num>2</span>What happens to one record</h2>
+<p class=faint>Every record walks these four steps in order. After a run, the
+counts below each step show how many records left the pipeline there.</p>
+<div class=pipe>
+  <div class=step><div class=k>step 1</div><div class=t>Narrow</div>
+    <div class=d>Look up ledger entries sharing this account, within a week of
+    this date. Cuts the search from every entry in the book to a few dozen.</div>
+    <div class="out" id=s1>&nbsp;</div></div>
+  <div class=step><div class=k>step 2</div><div class=t>Group check</div>
+    <div class=d>Is this one payment settling <i>several</i> invoices at once?
+    If so, picking a single best match would be wrong.</div>
+    <div class="out" id=s2>&nbsp;</div></div>
+  <div class=step><div class=k>step 3</div><div class=t>Rank</div>
+    <div class=d>Score the remaining candidates on amount, date and account
+    agreement. A trained model, not a rule.</div>
+    <div class="out" id=s3>&nbsp;</div></div>
+  <div class=step><div class=k>step 4</div><div class=t>Decide</div>
+    <div class=d>Post it, or hand it to a person. Bigger amounts must clear a
+    higher bar before they post unattended.</div>
+    <div class="out" id=s4>&nbsp;</div></div>
+</div>
+<p class=note>No language model runs anywhere in these four steps. It is used
+only to write explanations afterwards, where a wrong word costs nothing and a
+wrong match costs money.</p>
+
+<!-- ── three things you can do ────────────────────────────────────────── -->
+<h2><span class=num>3</span>Try it</h2>
+<div class=tabs>
+  <button id=t1 aria-selected=true>Run the demo</button>
+  <button id=t2 aria-selected=false>One payment, many invoices</button>
+  <button id=t3 aria-selected=false>Use your own file</button>
+</div>
+
+<section id=v1>
+  <p class=dim>Runs on records the model has never seen, and whose correct
+  answers are known — so the accuracy below is measured against them, not
+  asserted.</p>
+  <div>
+    <label>how many records <input id=n type=number value=500 min=1 max=4000 style=width:6rem></label>
+    <label title="Send everything to a person, to see the queue the reviewers would get"><input id=all type=checkbox> review everything</label>
+    <button id=go>Run</button>
+  </div>
+  <div id=out></div>
+</section>
+
+<section id=v2 class=hide>
+  <p class=dim>The hard case. One bank credit, several payments behind it. The
+  system gets the amount and a pool of about a hundred candidate payments, and
+  has to work out <i>which</i> ones — <b>it is never told the batch number</b>.</p>
+  <div>
+    <label>how many credits <input id=sn type=number value=150 min=1 max=150 style=width:5rem></label>
+    <button id=sgo>Solve</button>
+  </div>
+  <div id=sout></div>
+</section>
+
+<section id=v3 class=hide>
+  <p class=dim>Two CSV files: what the bank says arrived, and what your books
+  say it should be. Column names do not need to match ours — it looks for an
+  amount, a date and an account under whatever they are called.</p>
+  <div class=box style="margin-bottom:1rem">
+    <p style="margin:0 0 .5rem"><b>Bank file</b> <span class=faint>money that arrived</span></p>
+    <input type=file id=fbank accept=".csv">
+    <p style="margin:1rem 0 .5rem"><b>Ledger file</b> <span class=faint>what the books say</span></p>
+    <input type=file id=fledger accept=".csv">
+    <p style="margin:1rem 0 .6rem" class=faint>Needs a column for amount, date and
+    account in each. An invoice or reference column is used as the name of the
+    match if present.</p>
+    <button id=ugo>Reconcile my files</button>
+    <button id=usample style="background:#30363d;margin-left:.5rem">Use a sample pair</button>
+  </div>
+  <div id=uout></div>
+</section>
+
+<p class=faint style="margin-top:2.5rem">Every decision on this page, demo or
+upload, is written to an append-only audit log that the database itself refuses
+to let anything edit.</p>
+</div>
+
+<script>
+const $=s=>document.querySelector(s), fmt=n=>n.toLocaleString(),
+      pct=x=>(x*100).toFixed(1)+'%',
+      money=n=>n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}),
+      esc=s=>String(s??'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+
+// Plain words for every internal outcome name. A judge should never meet an
+// enum value on this page.
+const SAYS={
+  posted:{t:'Posted automatically',c:'g',
+          d:'Confident enough to book without a person looking.'},
+  queued:{t:'Sent to a person',c:'y',
+          d:'A best guess exists but it did not clear the bar for this amount.'},
+  suspected_grouped:{t:'One payment, several invoices',c:'b',
+          d:'Matching it to a single entry would be wrong, so it is split out for review.'},
+  no_candidate:{t:'Nothing to match',c:'r',
+          d:'No ledger entry is close enough on account and date to even consider.'}
+};
+
+function tab(n){
+  [1,2,3].forEach(i=>{
+    $('#t'+i).setAttribute('aria-selected', i===n);
+    $('#v'+i).classList.toggle('hide', i!==n);
+  });
+}
+[1,2,3].forEach(i=>$('#t'+i).onclick=()=>tab(i));
+
+async function call(url, opts, btn){
+  btn.disabled=true; const was=btn.textContent; btn.textContent='running…';
+  try{
+    const r=await fetch(url, opts);
+    if(!r.ok){ let m; try{ m=(await r.json()).detail; }catch{ m=r.statusText; } throw new Error(m); }
+    return await r.json();
+  } finally { btn.disabled=false; btn.textContent=was; }
+}
+const json=b=>({method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});
+
+// ── 1. what data is loaded ─────────────────────────────────────────────
+fetch('/api/meta').then(r=>r.json()).then(m=>{
+  $('#data').innerHTML=`
+  <p style="margin:0 0 .6rem"><b>${esc(m.source)}</b></p>
+  <p class=dim style="margin:0 0 .8rem">Real bank and ledger records from a
+  Tier-1 financial institution's production system, released for research. The
+  labels are decisions real analysts made about real money.</p>
+  <div class=grid style="margin:.6rem 0 .8rem">
+    <div class=c><div class=n>${fmt(m.n_demo_records)}</div><div class=l>bank records held back for this demo</div></div>
+    ${m.n_demo_keys?`<div class=c><div class=n>${fmt(m.n_demo_keys)}</div><div class=l>ledger entries to search</div></div>`:''}
+    ${m.trained_on?`<div class=c><div class=n>${fmt(m.trained_on)}</div><div class=l>records used to train</div></div>`:''}
+  </div>
+  <p class=faint style="margin:0">These demo records were <b>never seen during
+  training</b>, and they come from a later time period than the training set —
+  so the model cannot have memorised them, and cannot have learned from the
+  future. That is why the accuracy on this page means something.</p>`;
+}).catch(()=>{ $('#data').innerHTML='<p class=r style="margin:0">Could not load dataset details.</p>'; });
+
+// ── the pipeline counters ──────────────────────────────────────────────
+function pipeline(s, total){
+  const left = n => n ? `<b>${fmt(n)}</b> left here` : '<span class=faint>none left here</span>';
+  $('#s1').innerHTML = `${left(s.no_candidate)} <span class=faint>· nothing close enough</span>`;
+  $('#s2').innerHTML = `${left(s.suspected_grouped)} <span class=faint>· looked grouped</span>`;
+  $('#s3').innerHTML = `<b>${fmt(total - s.no_candidate - s.suspected_grouped)}</b> <span class=faint>scored and ranked</span>`;
+  $('#s4').innerHTML = `<b class=g>${fmt(s.posted)}</b> posted · <b class=y>${fmt(s.queued)}</b> to a person`;
+}
+
+// ── 2. the demo run ────────────────────────────────────────────────────
+$('#go').onclick=async()=>{
+  $('#out').innerHTML='';
+  try{
+    const d=await call('/api/run', json({limit:+$('#n').value, review_all:$('#all').checked}), $('#go'));
+    renderRun(d);
+  }catch(e){ $('#out').innerHTML=`<p class=r>${esc(e.message)}</p>`; }
+};
+
+function renderRun(d){
+  const s=d.summary;
+  pipeline(s, d.n_records);
+  const accounted = s.posted+s.queued+s.suspected_grouped+s.no_candidate;
+  $('#out').innerHTML=`
+  <div class=grid>
+    <div class=c><div class=n>${fmt(d.n_records)}</div><div class=l>records in</div></div>
+    <div class=c><div class="n g">${pct(d.precision_of_posted)}</div>
+      <div class=l>of what it posted was right</div></div>
+    <div class=c><div class=n>${pct(d.straight_through_rate)}</div>
+      <div class=l>needed no person at all</div></div>
+    <div class=c><div class=n>${fmt(Math.round(d.records_per_second))}</div><div class=l>records/sec</div></div>
+    <div class=c><div class=n>${d.llm_calls_on_matching_path}</div><div class=l>AI model calls while matching</div></div>
+  </div>
+  <p class=faint>${fmt(accounted)} of ${fmt(d.n_records)} records accounted for —
+  nothing silently dropped. Run <code>${esc(d.run_id)}</code>.
+  ${d.posted_correct!==undefined?`${fmt(d.n_records-accounted)} unexplained.`:''}</p>
+
+  <h3 style="font-size:.95rem;margin:1.4rem 0 .2rem">Where each record ended up</h3>
+  <table><tr><th>outcome</th><th class=num>records</th><th>what it means</th></tr>
+  ${Object.entries(s).sort((a,b)=>b[1]-a[1]).map(([k,v])=>{
+    const w=SAYS[k]||{t:k,c:'',d:''};
+    return `<tr><td><span class="tag ${w.c}">${w.t}</span></td>
+      <td class=num>${fmt(v)}</td><td class=dim>${w.d}</td></tr>`;}).join('')}
+  </table>
+
+  <h3 style="font-size:.95rem;margin:1.4rem 0 .2rem">The ${fmt(d.n_exceptions)} a person would see</h3>
+  <p class=faint style="margin:0 0 .4rem">Each says why it stopped, so the reviewer
+  starts from a reason rather than a blank row.</p>
+  <div class=scroll><table>
+  <tr><th>record</th><th class=num>amount</th><th>stopped at</th><th>why</th></tr>
+  ${d.exceptions.slice(0,40).map(e=>{
+    const w=SAYS[e.reason]||{t:e.reason,c:''};
+    return `<tr><td>${esc(e.record_id)}</td><td class=num>${money(e.amount)}</td>
+     <td><span class="tag ${w.c}">${w.t}</span></td>
+     <td class=dim>${esc(e.explanation)}</td></tr>`;}).join('')}
+  </table></div>`;
+}
+
+// ── 3. grouped settlements ─────────────────────────────────────────────
+$('#sgo').onclick=async()=>{
+  $('#sout').innerHTML='';
+  try{
+    const d=await call('/api/settlements', json({limit:+$('#sn').value, max_pool:128}), $('#sgo'));
+    renderSettlements(d);
+  }catch(e){ $('#sout').innerHTML=`<p class=r>${esc(e.message)}</p>`; }
+};
+
+function renderSettlements(d){
+  const WORD={solved:{t:'Found the group',c:'g'},
+              ambiguous:{t:'Two possible groups — refused to guess',c:'y'},
+              unresolved:{t:'Could not resolve',c:'y'}};
+  const rank=r=>r.exact?(r.components.length>1?0:1)
+                :(r.status==='solved'?2:r.status==='ambiguous'?3:4);
+  const rows=[...d.results].sort((a,b)=>rank(a)-rank(b));
+  $('#sout').innerHTML=`
+  <div class=grid>
+    <div class=c><div class=n>${fmt(d.n_settlements)}</div><div class=l>bank credits</div></div>
+    <div class=c><div class="n g">${pct(d.precision)}</div>
+      <div class=l>of the groups it named were right</div></div>
+    <div class=c><div class=n>${pct(d.exact_recovery_rate)}</div>
+      <div class=l>of all credits fully recovered</div></div>
+    <div class=c><div class="n y">${fmt(d.ambiguous)}</div><div class=l>refused — two answers fit</div></div>
+    <div class=c><div class=n>${d.seconds}s</div><div class=l>total</div></div>
+  </div>
+  <p class=note>A set of payments that adds up to the right total is <b>not</b>
+  proof it is the right set — with a hundred candidates, many combinations hit
+  any given number. So when two different groups both fit, it says so instead of
+  picking one.</p>
+
+  <h3 style="font-size:.95rem;margin:1.4rem 0 .2rem">Broken down by how big the real group was</h3>
+  <div class=scroll><table>
+  <tr><th>the real group</th><th class=num>credits</th><th class=num>recovered</th>
+  <th class=num>got it wrong</th><th class=num>refused</th><th class=num>couldn't reach</th></tr>
+  ${d.by_batch_size.map(b=>`<tr>
+    <td>${b.size} payment${b.size===1?'':'s'}</td><td class=num>${b.n}</td>
+    <td class="num ${b.recovered?'g':''}">${b.recovered}</td>
+    <td class="num ${b.wrong?'r':''}">${b.wrong}</td>
+    <td class="num ${b.ambiguous?'y':''}">${b.ambiguous}</td>
+    <td class="num faint">${b.unreachable}</td></tr>`).join('')}
+  </table></div>
+  <p class=faint>“Couldn't reach” means the real answer was never among the
+  candidates it was shown — a limit of the narrowing step, not of the solver.</p>
+
+  <h3 style="font-size:.95rem;margin:1.4rem 0 .2rem">The arithmetic, credit by credit</h3>
+  ${rows.slice(0,60).map(r=>`
+  <div class=set>
+    <div class=hd>
+      <span>${esc(r.settlement_id)} · <span class=y>${esc(r.currency)}</span> ${money(r.amount)}</span>
+      <span><span class="tag ${r.exact?'g':(WORD[r.status]||{}).c||''}">${
+        r.exact?'Found the group':(WORD[r.status]||{t:r.status}).t}</span>
+      <span class=faint> chosen from ${r.pool_size}</span></span>
+    </div>
+    ${r.components.length?`<div class=sum><b>${money(r.amount)}</b> = ${
+      r.components.map(c=>money(c.amount)).join(' + ')}</div>
+    <ul class=parts>${r.components.map(c=>
+      `<li><span>${esc(c.payment_id)}${c.order_id?' · '+esc(c.order_id):''}</span>
+       <span>${money(c.amount)}</span></li>`).join('')}</ul>`:''}
+    <p class=why>${esc(r.explanation)}</p>
+  </div>`).join('')}`;
+}
+
+// ── 4. your own file ───────────────────────────────────────────────────
+const SAMPLE={
+  bank:`id,account,amount,date
+B-1001,ACME-001,1250.00,2026-03-01
+B-1002,ACME-002,80.50,2026-03-02
+B-1003,ACME-001,4300.00,2026-03-04
+B-1004,NOBODY-9,777.00,2026-03-05`,
+  ledger:`invoice,account,amount,date
+INV-501,ACME-001,1250.00,2026-03-01
+INV-502,ACME-002,80.50,2026-03-03
+INV-503,ACME-001,4300.00,2026-03-03
+INV-504,ACME-001,120.00,2026-03-06`
+};
+
+async function reconcile(bankBlob, ledgerBlob, btn){
+  const fd=new FormData();
+  fd.append('bank', bankBlob, 'bank.csv');
+  fd.append('ledger', ledgerBlob, 'ledger.csv');
+  $('#uout').innerHTML='';
+  try{
+    renderUpload(await call('/api/reconcile', {method:'POST', body:fd}, btn));
+  }catch(e){ $('#uout').innerHTML=`<p class=r>${esc(e.message)}</p>`; }
+}
+
+$('#ugo').onclick=()=>{
+  const b=$('#fbank').files[0], l=$('#fledger').files[0];
+  if(!b||!l){ $('#uout').innerHTML='<p class=y>Choose both files first.</p>'; return; }
+  reconcile(b, l, $('#ugo'));
+};
+$('#usample').onclick=()=>reconcile(
+  new Blob([SAMPLE.bank],{type:'text/csv'}),
+  new Blob([SAMPLE.ledger],{type:'text/csv'}), $('#usample'));
+
+function renderUpload(d){
+  const s=d.summary;
+  pipeline(s, d.n_records);
+  $('#uout').innerHTML=`
+  <div class=grid>
+    <div class=c><div class=n>${fmt(d.n_records)}</div><div class=l>bank rows read</div></div>
+    <div class=c><div class=n>${fmt(d.n_ledger_rows)}</div><div class=l>ledger rows read</div></div>
+    <div class=c><div class="n g">${fmt(s.posted)}</div><div class=l>matched confidently</div></div>
+    <div class=c><div class="n y">${fmt(s.queued+s.suspected_grouped)}</div><div class=l>needs a person</div></div>
+    <div class=c><div class="n r">${fmt(s.no_candidate)}</div><div class=l>nothing to match</div></div>
+  </div>
+  <p class=note>${esc(d.caveat)}</p>
+  <div class=scroll><table>
+  <tr><th>record</th><th class=num>amount</th><th>matched to</th><th class=num>confidence</th><th>what happened</th></tr>
+  ${d.results.slice(0,200).map(r=>{
+    const w=SAYS[r.outcome]||{c:''};
+    return `<tr><td>${esc(r.record_id)}</td><td class=num>${money(r.amount)}</td>
+    <td class="${r.matched_key?'g':'faint'}">${r.matched_key?esc(r.matched_key):'—'}</td>
+    <td class=num>${r.confidence!=null?pct(r.confidence):'—'}</td>
+    <td class=dim>${esc(r.explanation)}</td></tr>`;}).join('')}
+  </table></div>
+  <p class=faint>Run <code>${esc(d.run_id)}</code> — written to the same audit log as the demo.</p>`;
+}
+</script>

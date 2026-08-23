@@ -909,3 +909,66 @@ single-payment credits to the matcher and widening the settlement pool, in that
 order. The solver's own remaining weakness is the 14 three-payment ties, and
 those need a second signal beyond amount (order reference, merchant, timing) to
 break, not more search.
+
+---
+
+## Reading my own demo as a judge who has not read anything
+
+Asked to look at the deployed page knowing only the problem statement, the
+verdict was that it is incomprehensible: what data is going in is not stated,
+your own data cannot go in, the workflow is invisible, and some things say
+"resolved" and others "unresolved" with no explanation of either.
+
+Checking rather than arguing, one of those is not a wording problem:
+
+```
+endpoints built and tested : 7
+endpoints the page can reach: 2   (/api/run, /api/settlements)
+```
+
+`/api/meta` carries the dataset provenance and the page never called it.
+`/api/upload` **validated a CSV and returned "reconciliation of uploaded files
+is not wired yet"**. `/api/connect` returned 501. So "I cannot feed it my own
+data" was not a usability complaint — the capability did not exist. I had built
+the validation, tested it, documented it in the README, and never noticed that
+nothing behind it did anything.
+
+**Every one of those endpoints had passing tests.** The tests asserted that
+upload rejects a non-CSV, rejects an oversized file, rejects missing columns.
+All true, all passing, and all of it testing a door with no room behind it. A
+test suite confirms the code does what it says; it cannot notice that what it
+says is not worth doing.
+
+### What changed
+
+**Uploads actually reconcile now.** Two CSVs — bank side and ledger side —
+parsed by column *discovery* rather than by demanding our names (`Txn Amt
+(INR)`, `Val Dt`, `A/c No` all resolve), then run through `_match_one`, the
+same function the demo calls. A separate path for user data would have made the
+demo's measured numbers evidence for nothing but the demo.
+
+Two rules pull opposite ways in that parser and both are kept: forgiving about
+column names, unforgiving about money. A third decimal place is refused with the
+row number rather than rounded, because every other error announces itself and
+that one balances and lies. Date layout is chosen **once for the whole file** by
+vote — deciding per row silently mixes day-first and month-first inside one file
+and shifts dates by weeks with nothing visibly wrong.
+
+**No precision is reported for uploads.** The demo can score itself because
+BenchRec is labelled; an uploaded file has no answer key, so any accuracy figure
+would be invented. The endpoint returns that sentence rather than a number.
+
+**The workflow is on the page.** Four steps — narrow, group check, rank, decide
+— each with what it does in one sentence, and after a run, how many records left
+the pipeline at that step. The counts are the explanation.
+
+**No internal name is shown to a visitor.** `suspected_grouped` is a good
+variable name and a terrible thing to put in front of someone who has read only
+the problem statement. It now reads "One payment, several invoices", with a
+sentence saying why matching it to a single entry would be wrong. Three tests
+hold the line: no enum in the visible page, no page field absent from the API,
+no built endpoint unreachable from the page.
+
+The last one exists because the page had been reading `m.n_keys` and `m.n_train`
+against a meta endpoint that returns `n_demo_keys` and `trained_on` — two of the
+three dataset figures rendered as nothing at all, and nothing failed.
