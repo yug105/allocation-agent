@@ -808,25 +808,67 @@ def test_the_date_layout_that_was_chosen_is_reported_back(client):
     assert body["date_layout"]["ledger"] == "YYYY-MM-DD"
 
 
+
 # --------------------------------------------------------------------------- #
-# Measured on the deployed free instance: ~40 records/second, so the page's old
-# default of 500 was a 13-second wait behind a button that only says
-# "running...", and its old maximum of 4,000 was around 100 seconds -- long
-# enough that a visitor concludes it has hung. The controls now offer what the
-# deployed box can actually do.
+# The previous attempt at this was prose plus an HTML attribute and enforced
+# nothing: `max=2000` is advisory, the click handler read `.value` regardless,
+# and the server default stayed at 500. Typing 4000 into the box produced
+# exactly the run the change claimed to prevent.
+#
+# The number also had no owner. Four different figures were live at once -- 40
+# on the page, 45 in the README, 495 and 524 elsewhere in the same README --
+# which is the defect `test_the_threshold_is_sent_to_the_page_rather_than_
+# duplicated_in_it` already exists to stop.
 # --------------------------------------------------------------------------- #
 
-def test_the_demo_control_defaults_to_a_batch_that_returns_quickly(client):
+def test_the_measured_rates_come_from_the_server(client):
+    from allocation_agent.api import FREE_TIER_RECORDS_PER_SECOND
+    meta = client.get("/api/meta").json()
+    assert meta["free_tier_records_per_second"] == FREE_TIER_RECORDS_PER_SECOND
+
+
+def test_the_page_does_not_hardcode_a_throughput_figure(client):
+    """It reads the rate from /api/meta and derives the estimate from it."""
+    page = client.get("/").text
+    for stale in ("40 records a second", "45 records a second",
+                  "roughly six seconds", "495", "524"):
+        assert stale not in page, f"page hardcodes {stale!r}"
+    assert "free_tier_records_per_second" in page
+
+
+def test_the_record_count_control_offers_the_whole_held_out_set(client):
+    """Section 1 advertises 4,000 held-out records. Refusing to run more than
+    half of them, with no sentence saying why, is worse than showing the cost."""
     import re
-    page = client.get("/").text
-    field = re.search(r'<input id=n type=number value=(\d+) min=\d+ max=(\d+)', page)
-    assert field, "record-count control not found"
-    default, maximum = int(field.group(1)), int(field.group(2))
-    assert default <= 250, f"default of {default} is a {default / 40:.0f}s wait"
-    assert maximum <= 2000, f"maximum of {maximum} is a {maximum / 40:.0f}s wait"
+    meta = client.get("/api/meta").json()
+    field = re.search(r'<input id=n type=number value=(\d+) min=(\d+) max=(\d+)',
+                      client.get("/").text)
+    assert field
+    default, minimum, maximum = (int(g) for g in field.groups())
+    assert maximum == meta["n_demo_records"]
+    assert minimum >= 1
+    assert minimum <= default <= maximum, "the control's own default is out of range"
+    assert default <= 250, "the default should return quickly"
 
 
-def test_the_page_states_the_deployed_throughput(client):
-    """A visitor who knows it is six seconds waits; one who does not reloads."""
+def test_the_page_clamps_before_sending_rather_than_trusting_the_attribute(client):
+    """`max` on an input outside a form does not stop JS reading `.value`."""
     page = client.get("/").text
-    assert "40 records a second" in page
+    assert "clamp" in page, "no clamping helper in the page"
+    assert "limit:+$('#n').value" not in page, "still sends the raw field value"
+
+
+def test_a_validation_error_is_shown_as_words_not_object_object(client):
+    """FastAPI returns `detail` as a list of dicts for a 422. Passing that to
+    `new Error()` renders the literal text [object Object]."""
+    page = client.get("/").text
+    assert "Array.isArray" in page or ".map(" in page, \
+        "the error path does not handle a list-shaped detail"
+
+
+def test_the_note_a_visitor_must_read_is_not_the_faintest_text(client):
+    """It was styled `.faint` -- the page's lowest contrast, ~4.1:1, under the
+    4.5:1 floor -- for the one sentence that has to be read before clicking."""
+    page = client.get("/").text
+    est = page[page.index("id=estimate") - 200:page.index("id=estimate") + 200]
+    assert "class=faint" not in est

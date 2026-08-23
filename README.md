@@ -44,7 +44,7 @@ Held-out temporal split, test frozen, models trained on earlier records only.
 | straight-through rate | 79.3% |
 | **precision of auto-posted matches** | **99.2%** (29,426 / 29,649) |
 | grouped records routed to review | 87.3% |
-| throughput | 524 rec/sec on a laptop (8-core M-series); **~45/sec on free-tier hosting**, which is a fraction of a CPU |
+| throughput | **795 rec/sec** on a laptop (8-core arm64); **45/sec** on free-tier hosting, which is a fraction of a CPU. Both are the median of three warm runs |
 | **LLM calls on the matching path** | **0** |
 | records unaccounted for | **0** |
 
@@ -134,7 +134,7 @@ Stated plainly, because the alternative is being asked about them.
 
 **Straight-through is below vendor claims.** HighRadius publishes 95–98% auto-match; this posts 79.3%. Some of the gap is definitional — routing a grouped record to a human counts against us and may not count against them — but the comparison is written the way that does not assume our favour.
 
-**Throughput is 1.26× the published commercial figure, not more** — and that is on a laptop. On the free-tier host the live demo runs at ~45 rec/sec, roughly 11× slower, because the instance is a fraction of a CPU. Blocking alone does 6,720/sec; the pipeline is still a per-record Python loop. A throughput number without the machine attached is not a number.
+**Throughput is about 1.9× the published commercial figure** — and that is on a laptop. On the free-tier host the live demo runs at 45 rec/sec, roughly 18× slower, because the instance is a fraction of a CPU. Blocking alone does 6,720/sec; the pipeline is still a per-record Python loop. A throughput number without the machine attached is not a number.
 
 **The grouped-settlement numbers come from synthetic data.** BenchRec has no subset-sum structure — measured, not assumed: 0 of 4,000 grouped records form a closed batch, because `matchId` is a batch identifier rather than an accounting unit. So the solver is evaluated on [ReconRiver](https://huggingface.co/datasets/heybadrinath/reconriver-synthetic-reconciliation), which does have it. Synthetic amounts are drawn independently, which likely makes coincidental subsets *rarer* than in production — so 96.6% precision should be read as an upper bound, not a forecast.
 
@@ -152,7 +152,7 @@ Stated plainly, because the alternative is being asked about them.
 
 Deployed on Render's free tier. The first request after a period of inactivity
 takes ~50 seconds to wake the container; subsequent ones are immediate. The
-instance is a fraction of a CPU, so throughput there is ~45 rec/sec against 495
+instance is a fraction of a CPU, so throughput there is 45 rec/sec against 795
 on a laptop — same code, different hardware.
 
 The demo runs on **held-out records the models never saw during training**, so

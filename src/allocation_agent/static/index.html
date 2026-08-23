@@ -113,14 +113,11 @@ wrong match costs money.</p>
   answers are known — so the accuracy below is measured against them, not
   asserted.</p>
   <div>
-    <label>how many records <input id=n type=number value=200 min=1 max=2000 style=width:6rem></label>
+    <label>how many records <input id=n type=number value=200 min=1 max=4000 style=width:6rem></label>
     <label title="Send everything to a person, to see the queue the reviewers would get"><input id=all type=checkbox> review everything</label>
     <button id=go>Run</button>
   </div>
-  <p class=faint style="margin:.5rem 0 0">This runs on a free instance with a
-  fraction of a CPU — about <b>40 records a second</b>, so 200 takes roughly six
-  seconds and 2,000 takes closer to a minute. On a laptop the same code does
-  ~495/sec; the gap is the hardware, not the pipeline.</p>
+  <p class=dim id=estimate style="margin:.5rem 0 0"></p>
   <div id=out></div>
 </section>
 
@@ -159,6 +156,9 @@ to let anything edit.</p>
 </div>
 
 <script>
+let META = null;              // filled by /api/meta; the page states no rate of its own
+let OBSERVED_RATE = null;     // updated from the last real run on *this* box
+
 const $=s=>document.querySelector(s), fmt=n=>n.toLocaleString(),
       pct=x=>(x*100).toFixed(1)+'%',
       money=n=>n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}),
@@ -177,6 +177,33 @@ const SAYS={
           d:'No ledger entry is close enough on account and date to even consider.'}
 };
 
+// The estimate is derived, live, from the number in the box and the best rate
+// known for this machine. A static two-point sentence went stale the moment
+// either changed, and said nothing at all about the values in between.
+function rate(){
+  return OBSERVED_RATE || (META && META.free_tier_records_per_second) || null;
+}
+function clamp(el){
+  const lo = +el.min || 1, hi = +el.max || Infinity;
+  let v = Math.floor(+el.value);
+  if(!Number.isFinite(v)) v = lo;
+  v = Math.min(hi, Math.max(lo, v));
+  if(String(v) !== el.value) el.value = v;   // an out-of-range keystroke is corrected
+  return v;
+}
+function showEstimate(){
+  const el = $('#estimate'); if(!el) return;
+  const n = clamp($('#n')), r = rate();
+  if(!r){ el.textContent=''; return; }
+  const secs = n / r;
+  const cold = OBSERVED_RATE ? '' :
+    ' The first run after a quiet spell also waits ~50s for the free instance to wake.';
+  const how = OBSERVED_RATE ? 'measured on your last run here'
+            : `${fmt(r)} records/sec on the deployed free instance`;
+  el.innerHTML = `About <b>${secs < 1 ? '1' : secs.toFixed(secs < 10 ? 0 : 0)} second${
+    secs < 1.5 ? '' : 's'}</b> — ${how}.${cold}`;
+}
+
 function tab(n){
   [1,2,3].forEach(i=>{
     $('#t'+i).setAttribute('aria-selected', i===n);
@@ -189,7 +216,17 @@ async function call(url, opts, btn){
   btn.disabled=true; const was=btn.textContent; btn.textContent='running…';
   try{
     const r=await fetch(url, opts);
-    if(!r.ok){ let m; try{ m=(await r.json()).detail; }catch{ m=r.statusText; } throw new Error(m); }
+    if(!r.ok){
+      let m;
+      try{
+        const d=(await r.json()).detail;
+        // FastAPI returns `detail` as a list of objects for a 422. Handing that
+        // to new Error() renders the literal text "[object Object]".
+        m = Array.isArray(d) ? d.map(e=>e.msg||JSON.stringify(e)).join('; ')
+          : (typeof d === 'string' ? d : JSON.stringify(d));
+      }catch{ m=r.statusText; }
+      throw new Error(m||r.statusText);
+    }
     return await r.json();
   } finally { btn.disabled=false; btn.textContent=was; }
 }
@@ -211,7 +248,11 @@ fetch('/api/meta').then(r=>r.json()).then(m=>{
   training</b>, and they come from a later time period than the training set —
   so the model cannot have memorised them, and cannot have learned from the
   future. That is why the accuracy on this page means something.</p>`;
+  META = m;
+  $('#n').max = m.n_demo_records;      // the whole advertised held-out set
+  showEstimate();
 }).catch(()=>{ $('#data').innerHTML='<p class=r style="margin:0">Could not load dataset details.</p>'; });
+$('#n').addEventListener('input', showEstimate);
 
 // ── the pipeline counters ──────────────────────────────────────────────
 function pipeline(s, total){
@@ -226,7 +267,9 @@ function pipeline(s, total){
 $('#go').onclick=async()=>{
   $('#out').innerHTML='';
   try{
-    const d=await call('/api/run', json({limit:+$('#n').value, review_all:$('#all').checked}), $('#go'));
+    const d=await call('/api/run', json({limit:clamp($('#n')), review_all:$('#all').checked}), $('#go'));
+    OBSERVED_RATE = d.records_per_second;   // the page now knows this machine
+    showEstimate();
     renderRun(d);
   }catch(e){ $('#out').innerHTML=`<p class=r>${esc(e.message)}</p>`; }
 };

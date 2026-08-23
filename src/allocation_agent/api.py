@@ -70,9 +70,21 @@ DIRECT_CONFIDENCE = 0.9898
 # Below this many records, report counts rather than rates.
 MIN_FOR_RATES = 20
 
+# Measured, and owned here so exactly one place states it. Median of three warm
+# runs each: 2,000 records on an 8-core arm64 laptop, 500 on the deployed free
+# instance. Four different figures were live at once before this constant
+# existed -- 40 on the page, 45 in the README, and 495 and 524 elsewhere in the
+# same README -- because each was typed by hand where it was needed.
+FREE_TIER_RECORDS_PER_SECOND = 45
+LAPTOP_RECORDS_PER_SECOND = 795
+
 
 class RunRequest(BaseModel):
-    limit: int = Field(default=500, gt=0, le=10**9)
+    # 200 returns in about four seconds on the deployed free instance. The
+    # default was 500 -- a thirteen-second wait for any caller that omits the
+    # field, which the page's own control had already stopped offering.
+    # Anything larger is clamped to the size of the held-out set.
+    limit: int = Field(default=200, gt=0, le=10**9)
     review_all: bool = False
     mult_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
 
@@ -177,7 +189,9 @@ def create_app() -> FastAPI:
     @app.get("/api/meta")
     def meta() -> dict:
         return {**state.meta, "n_demo_records": len(state.records),
-                "source": state.meta.get("source", "BenchRec (ICAIF 2023)")}
+                "source": state.meta.get("source", "BenchRec (ICAIF 2023)"),
+                "free_tier_records_per_second": FREE_TIER_RECORDS_PER_SECOND,
+                "laptop_records_per_second": LAPTOP_RECORDS_PER_SECOND}
 
     @app.post("/api/run")
     def run(req: RunRequest) -> dict:

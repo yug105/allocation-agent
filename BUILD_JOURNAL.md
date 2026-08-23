@@ -1432,3 +1432,84 @@ end of the dataset, every boundary of every threshold, wrong types, arrays where
 objects belong, missing multipart parts. No crashes, no 500s, and **every record
 accounted for in every run**: `posted + queued + grouped + none == n_records`
 held in all of them.
+
+---
+
+## A fix that enforced nothing
+
+The previous entry describes lowering the demo's record-count control so a
+visitor could not trigger a hundred-second run. A review of that commit found
+thirteen defects in it, and the summary was the part worth keeping:
+
+> the dominant theme is that this change is prose plus an HTML attribute, with
+> no enforcement anywhere.
+
+Correct on both counts.
+
+**`max=2000` stops nothing.** The input is not inside a `<form>`, and the click
+handler reads `+$('#n').value` regardless. Typing 4000 marks the field
+`:invalid` and returns "4000" anyway, the page POSTs it, and the server accepts
+`le=10**9`. The run I had claimed to prevent was one keystroke away. The test I
+wrote passed because it grepped the attribute and never exercised the behaviour.
+
+**The server default was untouched.** `RunRequest.limit` still defaulted to 500,
+so any caller omitting the field got exactly the thirteen-second run the commit
+message says was removed. The change lived entirely in a static HTML attribute.
+
+### The number had no owner
+
+Worse, and more embarrassing given this repo already has a test named
+`test_the_threshold_is_sent_to_the_page_rather_than_duplicated_in_it`:
+
+```
+page says          40 records a second
+README says        ~45/sec        (three places)
+README also says   524 rec/sec on a laptop   (line 47)
+README also says   495                       (line 155)
+```
+
+Four figures for two machines, each typed by hand where it was needed. The page
+had also claimed "roughly six seconds" for 200 records — at its own stated 40/sec
+that is five. On a page whose entire argument is that its numbers check out, the
+first division a reader performs fails.
+
+Measured properly, median of three warm runs each: **795 rec/sec** on an 8-core
+arm64 laptop, **45 rec/sec** on the deployed free instance. Both laptop figures
+in the README were stale — the direct path had made the pipeline faster and
+nothing re-measured. Both now live in `api.py` as constants, served through
+`/api/meta`, and the page states no rate of its own.
+
+### The estimate is now derived, not written
+
+A two-point prose estimate says nothing about the values between its endpoints:
+someone typing 1,500 still waited thirty-seven seconds behind a button reading
+"running…". So the page computes it live from the number in the box and the best
+rate known for the machine, and **the maximum went back up to 4,000** — the full
+held-out set the page advertises in its own first section. Refusing to run half
+of an advertised dataset, with no sentence explaining why, was a worse answer
+than showing the cost:
+
+```
+   200 -> About 4 seconds — 45 records/sec on the deployed free instance.
+  4000 -> About 89 seconds — 45 records/sec on the deployed free instance.
+```
+
+After a run it re-derives from what it actually observed, so the same page on a
+laptop stops quoting the free tier at you — the previous copy asserted "this
+runs on a free instance … about 40 records a second" while the tile two inches
+below reported 795.
+
+Three smaller ones from the same review: the 422 path rendered FastAPI's
+list-shaped `detail` through `new Error()` as the literal text
+**`[object Object]`**, which is what a visitor saw for an empty or decimal
+record count; the cold-start wake-up — the dominant wait, and documented in the
+README — went unmentioned in the very paragraph written to set expectations; and
+the sentence that must be read before clicking was styled `.faint`, the page's
+lowest-contrast text at ~4.1:1, below the 4.5:1 floor.
+
+**The pattern across this whole session.** Every one of these was a claim
+enforced by nothing: a badge derived from the wrong field, a guard on the wrong
+denominator, a cap justified by prose that skipped the row it turned on, a
+component constructed and never called, and now a limit that was only a
+suggestion. The fix each time was the same shape — move the thing being claimed
+to where it can be checked, then check it.
