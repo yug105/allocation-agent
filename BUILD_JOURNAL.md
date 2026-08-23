@@ -1280,3 +1280,76 @@ experiment. Deleting it was the obvious reading of "no decoration", and I did
 delete it, then put it back: the design for it was requested deliberately, and
 quietly removing requested work is not my call to make. Both are now labelled as
 what they are, in the README and in the architecture diagram.
+
+---
+
+## Asking the demo for four credits returned four failures
+
+Set the settlement count to 1 and everything fails. Set it to 4 and everything
+fails. The component looked broken because, for anyone sampling small, it was.
+
+The cause is not the solver:
+
+```
+where the unsolvable credits sit in file order
+  credits   0- 14: 11 of 15 unsolvable  XXXXXXXXXXX....
+  credits  15- 29:  3 of 15 unsolvable  .....X...X..X..
+  credits  30-149:  0 of 120 unsolvable ........................
+```
+
+**ReconRiver front-loads every hard case, and the demo took the first N.** Of
+150 credits, 14 are unsolvable and 11 of them are in the first fifteen. The
+worst possible sample, taken by default.
+
+Fixed by sampling evenly across the file — every Nth credit, chosen by position
+and never by outcome, and labelled as such on the page. Selecting the ones that
+succeed would be the cherry-picking this project already got wrong once with the
+solver export. Asking for four now returns two recovered groups with their
+arithmetic, one refused tie, and one genuine failure.
+
+### Why those fourteen fail, and three fixes that did not work
+
+Two overlapping causes. Ten credits are exactly **2.00 more** than the sum of
+their batch — a flat bank charge, so no exact subset can ever reach the credit.
+Twelve have candidate pools of **765-777** against a 128 cap, all of them USD,
+because the pool is built from currency and date and the export carries no
+account or merchant field to narrow it further.
+
+The solver has a `tolerance_minor` setting built for exactly this, and the API
+passes 0. Turning it on looked like the obvious fix. It is not:
+
+| attempt | answers | right | wrong | precision |
+|---|---|---|---|---|
+| exact only (shipped) | 115 | 113 | 2 | **98.3%** |
+| tolerance 2.00 | 123 | 113 | 10 | 91.1% |
+| fewest-payments before exact, tolerance 2.00 | 135 | 76 | 59 | 56.3% |
+| exact at *target − 2.00* when the plain solve fails | 121 | 115 | 6 | 95.0% |
+
+**Tolerance never recovered a single fee credit.** It added eight answers and
+all eight were wrong: opening a ±2.00 window across ~138,000 three-subsets finds
+coincidences far faster than truth. Reordering to prefer the fewest payments
+before exactness was worse still — at size 1 with a window, many single payments
+land near any target. Even solving at the *known* charge recovered only 2 of 10,
+because most fee credits are also the oversized-pool ones and are refused before
+any solving happens, and it cost 4 wrong answers to get 2 right ones.
+
+So they stay unrecovered. The refusal says what is known and nothing more.
+
+### The diagnostic I built and deleted the same hour
+
+Between those attempts I added a near-miss probe: when nothing matches exactly,
+search within a 5.00 window and tell the reviewer how far short the closest
+group falls. It shipped this sentence:
+
+> The closest group of 3 comes to **0.11** short of the credit, which is
+> consistent with a flat bank charge.
+
+The real charge is 2.00. The probe had found the nearest *coincidental* subset —
+with a 10.00-wide window and thousands of three-subsets, something always lands
+close — and narrated it as a diagnosis. For `SYNTH-BANK-000001` it did not even
+find the true batch, which is a single payment 2.00 away.
+
+I removed it. It is the same defect as the badge that said "Found the group"
+over a wrong answer and the paragraph that skipped size 4: presenting a
+coincidence with the grammar of evidence. That it appeared in the very work
+written to fix that pattern is the part worth remembering.

@@ -303,8 +303,11 @@ function renderSettlements(d){
     :`${d.solved} answer${d.solved===1?'':'s'}`}
   would read as a property of the system rather than of this handful. Rates appear
   once there are ${d.min_for_rates} of each — ${d.min_for_rates} credits for recovery,
-  ${d.min_for_rates} answers for precision. Credits run in file order, so a small
-  number is the first few, not a sample.</p>`}
+  ${d.min_for_rates} answers for precision.</p>`}
+  ${d.sampling==='all'?'':`<p class=faint style="margin:.2rem 0 0">Showing
+  ${d.n_settlements} credits spaced evenly across all 150 — every Nth one, chosen
+  by position and never by outcome. The source file front-loads its hard cases,
+  so the first few are not a sample of it.</p>`}
   <p class=note>A set of payments that adds up to the right total is <b>not</b>
   proof it is the right set — with a hundred candidates, many combinations hit
   any given number. So when two different groups both fit, it says so instead of

@@ -687,3 +687,81 @@ def test_the_superseded_upload_stub_is_gone(client):
 def test_the_unimplemented_connect_stub_is_gone(client):
     assert client.post("/api/connect", json={"key_id": "rzp_test_x",
                                              "key_secret": "y"}).status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Asking for a few credits returned the first few, and ReconRiver front-loads
+# every hard case: 11 of the first 15 are unsolvable and 0 of credits 30-149
+# are. So a visitor sampling small saw nothing but failures and concluded the
+# component does not work.
+#
+# The fix is an evenly spaced sample -- systematic, chosen by position and
+# never by outcome, and labelled on the page. Taking the best N would be the
+# cherry-picking this project already got wrong once.
+# --------------------------------------------------------------------------- #
+
+def test_a_small_request_samples_across_the_file_not_off_the_front(client):
+    body = client.post("/api/settlements", json={"limit": 4}).json()
+    ids = [r["settlement_id"] for r in body["results"]]
+    assert ids != sorted(ids)[:4] or len({i[-3:] for i in ids}) == 4
+    numbers = sorted(int(i.split("-")[-1]) for i in ids)
+    assert numbers[-1] - numbers[0] > 50, f"sample is bunched at the front: {numbers}"
+
+
+def test_the_sample_is_evenly_spaced_and_says_so(client):
+    body = client.post("/api/settlements", json={"limit": 5}).json()
+    assert body["sampling"] == "evenly spaced"
+    numbers = sorted(int(r["settlement_id"].split("-")[-1]) for r in body["results"])
+    gaps = [b - a for a, b in zip(numbers, numbers[1:])]
+    assert max(gaps) - min(gaps) <= 1, f"uneven spacing: {gaps}"
+
+
+def test_asking_for_everything_returns_everything_in_order(client):
+    body = client.post("/api/settlements", json={"limit": 150}).json()
+    assert body["sampling"] == "all"
+    assert body["n_settlements"] == 150
+
+
+def test_the_sample_is_chosen_by_position_never_by_outcome(client):
+    """Two runs of the same size return the same credits, and a small sample
+    still contains failures -- if it did not, it would be a curated one."""
+    a = client.post("/api/settlements", json={"limit": 10}).json()
+    b = client.post("/api/settlements", json={"limit": 10}).json()
+    assert [r["settlement_id"] for r in a["results"]] == [r["settlement_id"] for r in b["results"]]
+    assert any(r["status"] != "solved" for r in a["results"]), \
+        "a sample with no failures in it has been curated"
+
+
+
+# --------------------------------------------------------------------------- #
+# Ten credits carry a flat 2.00 charge, so the credit never equals the sum of
+# its batch; twelve have pools of 765-777 against a 128 cap, and the two groups
+# overlap. Three fixes were tried and measured, and all three made it worse:
+#
+#   tolerance 2.00                123 answers, 113 right -- every extra one wrong
+#   fewest-payments-before-exact  135 answers,  76 right -- far worse
+#   solve at target minus 2.00    121 answers, 115 right -- 2 of 10 recovered,
+#                                                           precision 98.3 -> 95.0
+#
+# So they stay unrecovered and the refusal says only what is known. A near-miss
+# probe was built and then removed: it reported gaps of 0.11 and 3.17 as
+# "consistent with a flat bank charge" when the real charge is exactly 2.00 --
+# finding the nearest coincidental subset and narrating it as evidence, which
+# is the defect this project keeps having to correct.
+# --------------------------------------------------------------------------- #
+
+def test_no_near_miss_is_narrated_as_a_probable_charge(client):
+    body = client.post("/api/settlements", json={"limit": 150}).json()
+    for r in body["results"]:
+        assert "near_miss_minor" not in r
+        assert "bank charge" not in r["explanation"].lower()
+
+
+def test_an_unresolved_credit_says_only_what_is_known(client):
+    body = client.post("/api/settlements", json={"limit": 150}).json()
+    unresolved = [r for r in body["results"] if r["status"] == "unresolved"]
+    assert unresolved
+    for r in unresolved:
+        assert not r["components"]
+        assert r["tone"] != "good"
+        assert r["verdict"] == "Could not resolve"

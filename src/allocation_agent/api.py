@@ -252,7 +252,21 @@ def create_app() -> FastAPI:
         if not state.settlements:
             raise HTTPException(503, "settlement demo data not loaded")
 
-        items = state.settlements[: min(req.limit, len(state.settlements))]
+        # Evenly spaced, not the first N. ReconRiver front-loads its hard
+        # cases -- 11 of the first 15 credits are unsolvable and none of
+        # credits 30-149 are -- so taking the head is systematically the worst
+        # possible sample and made the component look broken to anyone who
+        # asked for a few. Spacing is by position and never by outcome:
+        # selecting the ones that succeed is the cherry-picking this project
+        # already got wrong once.
+        total = len(state.settlements)
+        want = min(req.limit, total)
+        if want >= total:
+            items, sampling = state.settlements, "all"
+        else:
+            step = total / want
+            items = [state.settlements[int(i * step)] for i in range(want)]
+            sampling = "evenly spaced"
         cfg = SolverConfig(tolerance_minor=0, max_candidates=req.max_pool)
         out, solved, exact, wrong, ambiguous, unresolved = [], 0, 0, 0, 0, 0
         # Per true batch size. Which credits it gets wrong turns out to matter
@@ -351,6 +365,7 @@ def create_app() -> FastAPI:
 
         n = len(items)
         return {
+            "sampling": sampling,
             "n_settlements": n, "solved": solved, "ambiguous": ambiguous,
             "unresolved": unresolved,
             # coverage: got an answer at all. precision: that answer was right.
