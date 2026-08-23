@@ -1066,3 +1066,78 @@ marginal quality 92%.
 look right and the measured set worse, and I would have shipped it if I had
 stopped at the sample. A demo that starts working is not evidence the change was
 correct — the held-out set is, and it disagreed.
+
+---
+
+## A badge that said "Found the group" over a sentence saying it was wrong
+
+Asked for one credit on the settlement tab, the page returned:
+
+```
+SYNTH-BANK-000001 · GBP 773.33      [ Found the group ]
+773.33 = 144.98 + 170.34 + 45.36 + 367.82 + 44.83
+"This balances but is not the recorded batch — a summing subset is not
+ proof of the right subset, so it goes to review."
+```
+
+The badge and the sentence directly contradict each other. The label came from
+`status`, and `status` is `solved` whenever a subset *balances* — which says
+nothing about whether it is the right subset. That distinction is the entire
+point of the component and the label erased it.
+
+Fixed by moving the verdict server-side. It is a judgement about the answer, so
+the code that knows both `status` and `exact` makes it, and the page displays a
+string. Four tests now assert a balancing-but-wrong subset is never labelled
+"found" and never rendered as good news.
+
+### And the answer itself should not have been offered
+
+The deeper question is why a five-payment sum was claimed at all. Measured
+across the 150 settlements, by how many payments the answer used:
+
+| payments used | answers | right | precision | subsets of that size available |
+|---|---|---|---|---|
+| 1 | 7 | 7 | 100.0% | ~93 |
+| 2 | 62 | 62 | 100.0% | ~4,371 |
+| 3 | 46 | 44 | 95.7% | ~138,415 |
+| 4 | 1 | 0 | **0.0%** | ~3,612,280 |
+| 5 | 1 | 0 | **0.0%** | ~64,446,024 |
+
+The right-hand column is the mechanism. There are about four thousand ways to
+pick two payments out of a pool and sixty-four million ways to pick five. A
+two-payment sum that lands exactly on the target is evidence; a five-payment one
+is a coincidence that was always going to be available.
+
+Lowering `max_subset_size` from 8 to 4:
+
+| cap | answers | right | wrong | precision | coverage |
+|---|---|---|---|---|---|
+| 8 | 117 | 113 | 4 | 96.6% | 75.3% |
+| 4 | 116 | 113 | 3 | 97.4% | 75.3% |
+| 3 | 115 | 113 | 2 | 98.3% | 75.3% |
+
+**Coverage is identical at every cap.** Every correct answer used three payments
+or fewer, so tightening removed only wrong ones — it cost nothing.
+
+Two things this cannot show, both recorded in the config docstring rather than
+buried: the 0% above three payments is *two records*, not a rate; and
+ReconRiver's own batches never exceed three, so nothing here validates any
+particular larger cap. The default sits one above the largest batch the data
+contains rather than exactly at it, so it is not simply fitted to the observed
+maximum. A book with genuinely larger batches needs it raised and needs its own
+measurement to say where.
+
+### Percentages over one record
+
+The same screen reported `0.0% of the groups it named were right` — arithmetic
+over a single credit, reading as a measured property of the system. Rates are
+now withheld below twenty records and shown as counts, with a line saying the
+credits run in file order so a small number is the first few and not a sample.
+
+### The refusal message was also false
+
+With the cap in place the credit came back "No combination of the 97 candidate
+payments sums to this credit." A five-payment combination sums to it exactly —
+that is how the wrong answer arose. The honest sentence is that longer
+combinations may exist and are deliberately not claimed, which is what it now
+says.

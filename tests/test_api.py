@@ -474,3 +474,74 @@ def test_the_direct_match_says_in_plain_words_why_it_was_certain(client):
              "id,account,amount,date\nB1,A-1,80.50,2026-03-02\n",
              "invoice,account,amount,date\nINV-1,A-1,80.50,2026-03-03\n")
     assert "exact" in r["explanation"].lower()
+
+
+# --------------------------------------------------------------------------- #
+# The badge said "Found the group" above a sentence explaining it was not the
+# recorded batch. The label was derived from status alone, which is 'solved'
+# for a subset that balances whether or not it is the right one. A verdict is a
+# judgement about the answer, so the server makes it and the page displays it.
+# --------------------------------------------------------------------------- #
+
+def test_a_balancing_but_wrong_subset_is_never_labelled_found(settled):
+    for r in settled["results"]:
+        if r["status"] == "solved" and not r["exact"]:
+            assert "found" not in r["verdict"].lower()
+            assert "wrong" in r["verdict"].lower() or "not" in r["verdict"].lower()
+
+
+def test_a_correct_subset_is_labelled_found(settled):
+    hits = [r for r in settled["results"] if r["exact"]]
+    assert hits
+    for r in hits:
+        assert "found" in r["verdict"].lower()
+
+
+def test_every_result_carries_a_verdict_and_a_severity(settled):
+    for r in settled["results"]:
+        assert r["verdict"]
+        assert r["tone"] in {"good", "warn", "bad"}
+
+
+def test_a_wrong_answer_is_not_shown_as_good_news(settled):
+    for r in settled["results"]:
+        if r["status"] == "solved" and not r["exact"]:
+            assert r["tone"] == "bad"
+
+
+# --------------------------------------------------------------------------- #
+# Percentages over a handful of records are arithmetic, not evidence. Asking
+# for one credit and being told "0.0% precision" reads as a measured property
+# of the system rather than one record that happened to fail.
+# --------------------------------------------------------------------------- #
+
+def test_rates_are_withheld_when_there_are_too_few_records_to_mean_anything(client):
+    body = client.post("/api/settlements", json={"limit": 1}).json()
+    assert body["rates_meaningful"] is False
+
+
+def test_rates_are_reported_once_there_are_enough(client):
+    body = client.post("/api/settlements", json={"limit": 150}).json()
+    assert body["rates_meaningful"] is True
+
+
+# --------------------------------------------------------------------------- #
+# How many payments an answer uses decides how much it is worth. Measured on
+# ReconRiver: 100% right at one or two payments, 95.7% at three, and 0 of 2
+# right above that -- while the number of subsets of that size available to hit
+# any target by chance runs from ~4,000 at two to ~64,000,000 at five.
+# --------------------------------------------------------------------------- #
+
+def test_an_answer_using_more_payments_than_the_cap_is_not_claimed(client):
+    body = client.post("/api/settlements", json={"limit": 150}).json()
+    for r in body["results"]:
+        if r["status"] == "solved":
+            assert len(r["components"]) <= 4
+
+
+def test_refusing_on_the_size_cap_does_not_claim_nothing_adds_up(settled):
+    """A longer combination often does add up. Saying "no combination sums to
+    this" would be false; the honest statement is that it is not claimed."""
+    for r in settled["results"]:
+        if r["status"] == "unresolved" and "adds up" in r["explanation"]:
+            assert "not" in r["explanation"] and "claimed" in r["explanation"]

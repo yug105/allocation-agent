@@ -67,6 +67,9 @@ MAX_UPLOAD_ROWS = 20_000
 # Measured on the held-out set, not asserted: see _match_one.
 DIRECT_CONFIDENCE = 0.9898
 
+# Below this many records, report counts rather than rates.
+MIN_FOR_RATES = 20
+
 
 class RunRequest(BaseModel):
     limit: int = Field(default=500, gt=0, le=10**9)
@@ -289,9 +292,28 @@ def create_app() -> FastAPI:
                 unresolved += 1
                 bucket["unresolved"] += 1
                 status, expl = ("unresolved",
-                    f"No combination of the {r.n_considered} candidate payments sums to this credit.")
+                    f"No group of {cfg.max_subset_size} payments or fewer adds up to this "
+                    f"credit. Longer combinations may exist and are deliberately not "
+                    f"claimed — there are millions of ways to pick six payments out of "
+                    f"{r.n_considered}, so one that happens to hit the total is a "
+                    f"coincidence rather than evidence.")
+
+            # The label is a judgement about the answer, so it is made here.
+            # Deriving it from `status` alone in the page produced a badge
+            # reading "Found the group" above a sentence explaining that the
+            # group was wrong -- `solved` means a subset balances, not that it
+            # is the right subset.
+            if is_exact:
+                verdict, tone = "Found the group", "good"
+            elif status == "solved":
+                verdict, tone = "Wrong group — sent to review", "bad"
+            elif status == "ambiguous":
+                verdict, tone = "Two groups fit — refused to guess", "warn"
+            else:
+                verdict, tone = "Could not resolve", "warn"
 
             out.append({
+                "verdict": verdict, "tone": tone,
                 "settlement_id": st["settlement_id"],
                 "amount": round(st["amount_minor"] / 100, 2),
                 "currency": st["currency"], "booked_at": st["booked_at"],
@@ -312,6 +334,10 @@ def create_app() -> FastAPI:
             "precision": exact / solved if solved else 0.0,
             "wrong_set_rate": wrong / n if n else 0.0,
             "unreachable": unreachable,
+            # A percentage over a handful of records is arithmetic, not
+            # evidence: one credit that fails reads as "0.0% precision", which
+            # looks like a measured property of the system.
+            "rates_meaningful": n >= MIN_FOR_RATES,
             "by_batch_size": [dict(size=k, **v) for k, v in sorted(sizes.items())],
             "seconds": round(time.perf_counter() - started, 3),
             "results": out,
