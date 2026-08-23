@@ -20,7 +20,8 @@ cp -r "$ROOT/src" "$ROOT/artifacts" "$STAGE/"
 rm -f "$STAGE/artifacts/runs.db"          # runtime state, not an artifact
 
 echo "staged $(du -sh "$STAGE" | cut -f1) for $USER/$SPACE"
-python3 - "$USER" "$SPACE" "$STAGE" <<'PY'
+PY_BIN="$(command -v uv >/dev/null && echo "uv run python" || echo python3)"
+$PY_BIN - "$USER" "$SPACE" "$STAGE" <<'PY'
 import sys
 from huggingface_hub import HfApi
 user, space, stage = sys.argv[1:4]

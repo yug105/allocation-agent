@@ -13,6 +13,6 @@ RUN pip install --no-cache-dir -e . && pip install --no-cache-dir "uvicorn[stand
 COPY artifacts ./artifacts
 
 # Hugging Face Spaces expects 7860; everything else honours $PORT.
-ENV PORT=7860
+ENV PORT=7860 ARTIFACTS_DIR=/app/artifacts
 EXPOSE 7860
 CMD ["sh", "-c", "uvicorn allocation_agent.api:create_app --factory --host 0.0.0.0 --port ${PORT:-7860}"]

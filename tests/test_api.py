@@ -131,3 +131,34 @@ def test_a_live_razorpay_key_is_refused(client):
 def test_a_test_mode_key_is_accepted_in_shape(client):
     r = client.post("/api/connect", json={"key_id": "rzp_test_abc123"})
     assert r.status_code in (200, 501)
+
+
+def test_artifacts_directory_is_overridable(monkeypatch, tmp_path):
+    """A packaged install puts the code in site-packages, where a path relative
+    to __file__ no longer points at the artifacts. The deployment must be able
+    to say where they are."""
+    import importlib
+
+    monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path))
+    import allocation_agent.api as api
+
+    importlib.reload(api)
+    assert api.ARTIFACTS == tmp_path
+    monkeypatch.delenv("ARTIFACTS_DIR")
+    importlib.reload(api)
+
+
+def test_missing_artifacts_degrade_to_503_rather_than_crashing_at_import(monkeypatch, tmp_path):
+    """A container that cannot find its models should say so on request, not
+    fail to boot -- a crashed process gives a judge a blank page."""
+    import importlib
+
+    monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path / "nope"))
+    import allocation_agent.api as api
+
+    importlib.reload(api)
+    c = TestClient(api.create_app())
+    assert c.get("/api/health").json()["models_loaded"] is False
+    assert c.post("/api/run", json={"limit": 10}).status_code == 503
+    monkeypatch.delenv("ARTIFACTS_DIR")
+    importlib.reload(api)

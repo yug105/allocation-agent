@@ -12,3 +12,4 @@ data/*.db
 *.duckdb
 .DS_Store
 data/reconriver/
+artifacts/runs.db

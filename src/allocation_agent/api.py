@@ -17,6 +17,7 @@ Three ways in, in order of how many people will use them:
 from __future__ import annotations
 
 import json
+import os
 import pickle
 import time
 from pathlib import Path
@@ -36,7 +37,25 @@ from allocation_agent.report.audit import AuditLog, RunConfig
 from allocation_agent.stores.keys import KeyIndex, KeyRow
 from allocation_agent.types import BankRecord
 
-ARTIFACTS = Path(__file__).resolve().parents[2] / "artifacts"
+def _artifacts_dir() -> Path:
+    """Locate the artifacts directory.
+
+    ``parents[2]`` is correct for an editable install from a src layout and
+    wrong for a normal one, where the package lives in site-packages. Env var
+    first so a deployment can be explicit, then the plausible locations.
+    """
+    if env := os.environ.get("ARTIFACTS_DIR"):
+        return Path(env)
+    here = Path(__file__).resolve()
+    for candidate in (here.parents[2] / "artifacts",   # editable, src layout
+                      Path.cwd() / "artifacts",        # container workdir
+                      here.parents[3] / "artifacts"):  # site-packages install
+        if candidate.exists():
+            return candidate
+    return here.parents[2] / "artifacts"
+
+
+ARTIFACTS = _artifacts_dir()
 REQUIRED_COLUMNS = {"account", "amount", "date"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
