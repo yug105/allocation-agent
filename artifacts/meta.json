@@ -1,0 +1,7 @@
+{
+  "n_demo_records": 4000,
+  "n_demo_keys": 5869,
+  "trained_on": 134260,
+  "source": "BenchRec (ICAIF 2023)",
+  "note": "held-out temporal split; these records were never seen in training"
+}

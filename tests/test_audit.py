@@ -177,3 +177,32 @@ def test_reopening_the_database_preserves_history(tmp_path):
 
     b = AuditLog(path)
     assert len(b.decisions(run_id=run_id)) == 1
+
+
+def test_the_log_is_usable_from_several_threads(tmp_path):
+    """A web server handles requests on a thread pool. SQLite binds a connection
+    to its creating thread by default, so this fails without an explicit flag
+    and a lock -- and fails in production, not in development."""
+    import threading
+
+    from allocation_agent.decide.gate import GateConfig, decide
+
+    log = AuditLog(tmp_path / "threads.db")
+    log.start_run(run_cfg())
+    errors: list[Exception] = []
+
+    def worker(n: int) -> None:
+        try:
+            d = decide(confidence=0.99, amount_minor=100, config=GateConfig())
+            for i in range(20):
+                log.record(f"t{n}-{i}", d, keys=["K"], n_candidates=1, path="ranked")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(4)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+    log.commit()
+
+    assert not errors, errors
+    assert len(log.decisions()) == 80

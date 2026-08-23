@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -104,35 +105,45 @@ class AuditLog:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path)
+
+        # A web server handles requests on a thread pool, and SQLite binds a
+        # connection to its creating thread by default. Sharing one connection
+        # across threads needs both the flag *and* a lock -- the flag alone
+        # removes the guard without making writes safe.
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        self._lock = threading.RLock()
+        with self._lock:
+            self._conn.executescript(_SCHEMA)
+            self._conn.commit()
         self._run_id: str | None = None
 
     # -- runs ---------------------------------------------------------------- #
 
     def start_run(self, config: RunConfig) -> str:
         run_id = uuid.uuid4().hex[:12]
-        self._conn.execute(
+        with self._lock:
+            self._conn.execute(
             "INSERT INTO runs (run_id, started_at, approved_by, blocking, gate, "
             "policy_version, notes) VALUES (?,?,?,?,?,?,?)",
-            (run_id, _now(), config.approved_by, json.dumps(config.blocking),
-             json.dumps(config.gate), config.policy_version, config.notes),
-        )
-        self._conn.commit()
+                (run_id, _now(), config.approved_by, json.dumps(config.blocking),
+                 json.dumps(config.gate), config.policy_version, config.notes),
+            )
+            self._conn.commit()
         self._run_id = run_id
         return run_id
 
     def finish_run(self, run_id: str | None = None) -> None:
         rid = run_id or self._run_id
-        self._conn.execute("UPDATE runs SET finished_at = ? WHERE run_id = ?", (_now(), rid))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("UPDATE runs SET finished_at = ? WHERE run_id = ?", (_now(), rid))
+            self._conn.commit()
         if rid == self._run_id:
             self._run_id = None
 
     def get_run(self, run_id: str) -> dict[str, Any]:
-        row = self._conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         if row is None:
             raise KeyError(run_id)
         return dict(row)
@@ -152,15 +163,16 @@ class AuditLog:
         """Append one decision. Never overwrites."""
         if self._run_id is None:
             raise RuntimeError("no run in progress: call start_run() with approved settings first")
-        self._conn.execute(
+        with self._lock:
+            self._conn.execute(
             "INSERT INTO decisions (run_id, record_id, decided_at, path, outcome, chosen_keys, "
             "confidence, threshold_required, amount_minor, n_candidates, reason, policy_version, "
             "evidence, reviewer) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (self._run_id, record_id, _now(), path, decision.outcome.value,
              json.dumps(keys), decision.confidence, decision.threshold_required,
              decision.amount_minor, n_candidates, decision.reason,
-             decision.policy_version, json.dumps(evidence) if evidence else None, None),
-        )
+                 decision.policy_version, json.dumps(evidence) if evidence else None, None),
+            )
 
     def record_correction(
         self,
@@ -177,48 +189,54 @@ class AuditLog:
         """
         if self._run_id is None:
             raise RuntimeError("no run in progress")
-        prior = self._conn.execute(
-            "SELECT amount_minor, n_candidates, policy_version FROM decisions "
-            "WHERE record_id = ? ORDER BY seq DESC LIMIT 1",
-            (record_id,),
-        ).fetchone()
+        with self._lock:
+            prior = self._conn.execute(
+                "SELECT amount_minor, n_candidates, policy_version FROM decisions "
+                "WHERE record_id = ? ORDER BY seq DESC LIMIT 1",
+                (record_id,),
+            ).fetchone()
         if prior is None:
             raise KeyError(f"no prior decision for {record_id}")
 
-        self._conn.execute(
+        with self._lock:
+            self._conn.execute(
             "INSERT INTO decisions (run_id, record_id, decided_at, path, outcome, chosen_keys, "
             "confidence, threshold_required, amount_minor, n_candidates, reason, policy_version, "
             "evidence, reviewer) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (self._run_id, record_id, _now(), "human", "post", json.dumps(corrected_keys),
-             None, 0.0, prior["amount_minor"], prior["n_candidates"],
-             note or "corrected by reviewer", prior["policy_version"], None, reviewer),
-        )
-        self._conn.commit()
+                 None, 0.0, prior["amount_minor"], prior["n_candidates"],
+                 note or "corrected by reviewer", prior["policy_version"], None, reviewer),
+            )
+            self._conn.commit()
 
     def commit(self) -> None:
-        self._conn.commit()
+        with self._lock:
+            self._conn.commit()
 
     # -- reading ------------------------------------------------------------- #
 
     def decisions(self, run_id: str | None = None) -> list[dict[str, Any]]:
         rid = run_id or self._run_id
-        rows = self._conn.execute(
-            "SELECT * FROM decisions WHERE run_id = ? ORDER BY seq", (rid,)
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM decisions WHERE run_id = ? ORDER BY seq", (rid,)
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def summary(self, run_id: str | None = None) -> dict[str, int]:
         rid = run_id or self._run_id
-        rows = self._conn.execute(
-            "SELECT outcome, COUNT(*) n FROM decisions WHERE run_id = ? GROUP BY outcome", (rid,)
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT outcome, COUNT(*) n FROM decisions WHERE run_id = ? GROUP BY outcome", (rid,)
+            ).fetchall()
         return {r["outcome"]: r["n"] for r in rows}
 
     def raw_execute(self, sql: str) -> None:
         """Escape hatch for tests. Append-only triggers still apply."""
         try:
-            self._conn.execute(sql)
-            self._conn.commit()
+            with self._lock:
+                self._conn.execute(sql)
+                self._conn.commit()
         except sqlite3.IntegrityError as exc:
             raise ImmutableError(str(exc)) from exc
         except sqlite3.OperationalError as exc:
@@ -227,5 +245,6 @@ class AuditLog:
             raise
 
     def close(self) -> None:
-        self._conn.commit()
-        self._conn.close()
+        with self._lock:
+            self._conn.commit()
+            self._conn.close()

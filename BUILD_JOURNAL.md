@@ -667,3 +667,34 @@ second signal.
 Posting a wrong-but-balancing subset is the worst failure this system can
 produce: the books balance, the audit trail looks clean, and the money is
 attributed to the wrong invoices. Left as detect-and-route.
+
+---
+
+## The database bug the design predicted, hit in the deployment step
+
+Wiring the API, ten of sixteen tests failed at once:
+
+```
+sqlite3.ProgrammingError: SQLite objects created in a thread can only be used
+in that same thread.
+```
+
+A web server handles requests on a thread pool. SQLite binds a connection to its
+creating thread by default, so every write from a request handler raised.
+
+**The design document warned about exactly this** -- it rejected DuckDB for state
+on the grounds that a single-writer database "breaks on concurrent users". I then
+built the audit log on SQLite and did not apply the same reasoning, because in a
+single-threaded script it worked perfectly.
+
+**Fix:** `check_same_thread=False` **and** a re-entrant lock around every
+statement. The flag alone is the trap -- it removes the guard without making
+writes safe, so the failure would move from a loud exception in development to
+silent corruption under load.
+
+Added `test_the_log_is_usable_from_several_threads`: four threads, twenty writes
+each, assert eighty rows and no errors. It fails without the lock.
+
+**Kept because** the bug was predicted in writing, in the same document, and
+still shipped. Knowing a class of bug is not the same as checking for it in the
+place you have just written.
