@@ -186,6 +186,21 @@ The shipped variant gives up 8pp of coverage to cut wrong answers by half. A
 credit it refuses goes to a reviewer; a credit it gets wrong balances the books
 against the wrong invoices, which is the more expensive of the two.
 
+Split by how many payments the batch really had, that aggregate turns out to
+cover two different problems:
+
+| true batch | credits | recovered | wrong | ties refused | unresolved | unreachable |
+|---|---|---|---|---|---|---|
+| 1 payment | 30 | 7 | **4** | 3 | 16 | 21 |
+| 2 payments | 62 | **62** | 0 | 0 | 0 | 0 |
+| 3 payments | 58 | 44 | 0 | 14 | 0 | 0 |
+
+**On genuine multi-payment batches: 106 of 120 recovered, zero wrong.** Every
+wrong answer is a single-payment credit — an exact match that should never have
+reached a subset-sum solver, and for 21 of the 30 the true payment was not in
+the candidate pool at all. `unreachable` is reported separately because that is
+a blocking limit, not a solver one.
+
 ```
 
 uv run uvicorn allocation_agent.api:create_app --factory --reload   # the service

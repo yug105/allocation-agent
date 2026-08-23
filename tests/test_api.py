@@ -224,3 +224,41 @@ def test_a_balancing_but_wrong_subset_is_not_reported_as_correct(client):
 def test_settlement_results_carry_an_explanation(client):
     b = client.post("/api/settlements", json={"limit": 20}).json()
     assert all(r["explanation"] for r in b["results"])
+
+
+# --------------------------------------------------------------------------- #
+# Where the solver fails matters more than how often. Measured on ReconRiver,
+# every wrong answer and almost every refusal is a *single-payment* credit --
+# which is not a grouping problem at all and belongs on the matching path. On
+# genuine multi-payment batches the solver has not yet returned a wrong set.
+# One aggregate number hides that completely, so the split is reported.
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture(scope="module")
+def settled(client):
+    return client.post("/api/settlements", json={"limit": 150}).json()
+
+
+def test_results_are_broken_down_by_how_many_payments_the_batch_really_had(settled):
+    rows = settled["by_batch_size"]
+    assert {r["size"] for r in rows} >= {1, 2, 3}
+    for r in rows:
+        assert r["recovered"] + r["wrong"] + r["ambiguous"] + r["unresolved"] == r["n"]
+
+
+def test_the_breakdown_separates_single_payment_credits_from_real_batches(settled):
+    """A one-payment 'batch' is an exact match, not a subset-sum problem."""
+    rows = {r["size"]: r for r in settled["by_batch_size"]}
+    assert rows[1]["n"] > 0 and rows[2]["n"] > 0
+    multi_wrong = sum(r["wrong"] for s, r in rows.items() if s > 1)
+    assert multi_wrong <= rows[1]["wrong"]
+
+
+def test_a_batch_that_is_not_inside_the_candidate_pool_is_counted_as_unreachable(settled):
+    """No solver can recover a payment that blocking never offered it. Counting
+    those as solver failures would blame the wrong component."""
+    body = settled
+    assert body["unreachable"] >= 0
+    assert body["unreachable"] <= body["n_settlements"]
+    for r in body["by_batch_size"]:
+        assert r["unreachable"] <= r["n"]

@@ -876,3 +876,36 @@ The version before this one reported a single number -- "solved" -- for 89.3% of
 settlements, of which more than half were wrong. Splitting one metric into
 **coverage and precision** is what made the defect visible; the aggregate hid it
 completely, and the cherry-picked export hid it twice over.
+
+### Where it fails matters more than how often
+
+`75.3% coverage` is still one number covering two different problems. Split by
+how many payments the batch really had:
+
+| true batch | credits | recovered | wrong | ties refused | unresolved | unreachable |
+|---|---|---|---|---|---|---|
+| 1 payment | 30 | 7 | **4** | 3 | 16 | 21 |
+| 2 payments | 62 | **62** | 0 | 0 | 0 | 0 |
+| 3 payments | 58 | 44 | 0 | 14 | 0 | 0 |
+
+**On genuine multi-payment batches: 106 of 120 recovered, zero wrong, 14 refused
+as ties.** Every wrong answer in the whole run is a *single-payment* credit.
+
+Which is not a grouping problem at all. A credit whose amount equals one payment
+is an exact match and belongs on the matching path; it reached the solver only
+because the demo routes every settlement there. And it fails there for a reason
+that has nothing to do with subset-sum: for 21 of those 30 the true payment is
+**not in the candidate pool** — 10 missing outright, 12 in pools of up to 765
+that blow the 128 cap. With no k=1 available the solver does what it is asked
+and finds a larger subset that balances.
+
+So the `unreachable` column is reported separately. Blocking never offered the
+answer; charging that to the solver would send me optimising the component that
+is working. This is the same failure-locus argument the learning loop already
+routes on, applied to my own headline metric.
+
+**What this changes.** The next fix is not a better solver — it is routing
+single-payment credits to the matcher and widening the settlement pool, in that
+order. The solver's own remaining weakness is the 14 three-payment ties, and
+those need a second signal beyond amount (order reference, merchant, timing) to
+break, not more search.

@@ -259,6 +259,10 @@ def create_app() -> FastAPI:
         items = state.settlements[: min(req.limit, len(state.settlements))]
         cfg = SolverConfig(tolerance_minor=0, max_candidates=req.max_pool)
         out, solved, exact, wrong, ambiguous, unresolved = [], 0, 0, 0, 0, 0
+        # Per true batch size. Which credits it gets wrong turns out to matter
+        # more than how many, and one aggregate number hides it entirely.
+        sizes: dict[int, dict[str, int]] = {}
+        unreachable = 0
         started = time.perf_counter()
 
         for st in items:
@@ -269,27 +273,42 @@ def create_app() -> FastAPI:
             chosen = [pool_ids[i] for i in r.indices]
             is_exact = sorted(chosen) == sorted(st["truth"])
 
+            true_size = len(st["truth"])
+            bucket = sizes.setdefault(true_size, {"n": 0, "recovered": 0, "wrong": 0,
+                                                  "ambiguous": 0, "unresolved": 0,
+                                                  "unreachable": 0})
+            bucket["n"] += 1
+            # Blocking never offered the answer, so no solver could find it.
+            # Counting this against the solver blames the wrong component.
+            if not set(st["truth"]).issubset(pool_ids) or len(pool_ids) > req.max_pool:
+                bucket["unreachable"] += 1
+                unreachable += 1
+
             if r.status is SolverStatus.SOLVED:
                 solved += 1
                 exact += is_exact
                 wrong += (not is_exact)
+                bucket["recovered" if is_exact else "wrong"] += 1
                 status, expl = ("solved", _sum_sentence(state, st, chosen))
                 if not is_exact:
                     expl += (" This balances but is not the recorded batch — a summing "
                              "subset is not proof of the right subset, so it goes to review.")
             elif r.status is SolverStatus.AMBIGUOUS:
                 ambiguous += 1
+                bucket["ambiguous"] += 1
                 status, expl = ("ambiguous",
                     f"Two different sets of {r.subset_size} payments both reach "
                     f"{st['amount_minor'] / 100:,.2f} exactly. The amounts do not choose "
                     "between them, so neither is claimed.")
             elif r.status is SolverStatus.TOO_LARGE:
                 unresolved += 1
+                bucket["unresolved"] += 1
                 status, expl = ("unresolved",
                     f"{r.n_considered} candidate payments exceeds the {req.max_pool} cap. "
                     "Refused rather than truncated to fit.")
             else:
                 unresolved += 1
+                bucket["unresolved"] += 1
                 status, expl = ("unresolved",
                     f"No combination of the {r.n_considered} candidate payments sums to this credit.")
 
@@ -313,6 +332,8 @@ def create_app() -> FastAPI:
             "exact_recovery_rate": exact / n if n else 0.0,
             "precision": exact / solved if solved else 0.0,
             "wrong_set_rate": wrong / n if n else 0.0,
+            "unreachable": unreachable,
+            "by_batch_size": [dict(size=k, **v) for k, v in sorted(sizes.items())],
             "seconds": round(time.perf_counter() - started, 3),
             "results": out,
         }
@@ -434,7 +455,7 @@ measured against ground truth, not asserted.</p>
 <b>the batch identifier is never passed to it</b>. A subset that balances is not proof
 it is the right subset, so coverage and precision are reported separately.</p>
 <div>
-  <label>settlements <input id=sn type=number value=60 min=1 max=150 style=width:5rem></label>
+  <label>settlements <input id=sn type=number value=150 min=1 max=150 style=width:5rem></label>
   <label>pool cap <input id=sp type=number value=128 min=2 max=512 style=width:5rem></label>
   <button id=sgo>Solve</button>
 </div>
@@ -500,9 +521,12 @@ $('#sgo').onclick=async()=>{
 
 function renderSettlements(d){
   const cls={solved:'g',ambiguous:'y',unresolved:'y'};
-  // Correct answers first -- they are what the arithmetic view is for -- then
-  // the ties and refusals, which are the point of reporting two numbers.
-  const rank=r=>r.exact?0:(r.status==='solved'?1:r.status==='ambiguous'?2:3);
+  // Multi-payment recoveries first: splitting one credit across several payments
+  // is the problem this solver exists for, and a one-payment credit is an exact
+  // match rather than a subset-sum. Then wrong answers, ties, refusals -- the
+  // failures stay in the same list, below the counts, not on a separate page.
+  const rank=r=>r.exact?(r.components.length>1?0:1)
+                :(r.status==='solved'?2:r.status==='ambiguous'?3:4);
   const rows=[...d.results].sort((a,b)=>rank(a)-rank(b));
   $('#sout').innerHTML=`
   <div class=grid>
@@ -516,6 +540,19 @@ function renderSettlements(d){
   <p class=sub><b>coverage</b> = credits whose recorded batch it recovered &middot;
   <b>precision</b> = of the answers it gave, how many were the recorded batch &middot;
   balancing-but-wrong ${pct(d.wrong_set_rate)}</p>
+  <h3 style="font-size:1rem;margin:1.5rem 0 0">By how many payments the batch really had</h3>
+  <p class=sub style="margin:.2rem 0 0;font-size:.82rem">A one-payment credit is an exact
+  match, not a grouping problem. <b>unreachable</b> = the true batch was never in the
+  candidate pool, or the pool blew the cap &mdash; a blocking limit, not a solver one.</p>
+  <table><tr><th>true batch</th><th>credits</th><th>recovered</th><th>wrong</th>
+  <th>ties refused</th><th>unresolved</th><th>unreachable</th></tr>
+  ${d.by_batch_size.map(b=>`<tr>
+    <td>${b.size} payment${b.size===1?'':'s'}</td><td>${b.n}</td>
+    <td class="${b.recovered?'g':''}">${b.recovered}</td>
+    <td class="${b.wrong?'r':''}">${b.wrong}</td>
+    <td class="${b.ambiguous?'y':''}">${b.ambiguous}</td>
+    <td>${b.unresolved}</td><td style="color:var(--dim)">${b.unreachable}</td></tr>`).join('')}
+  </table>
   ${rows.map(r=>`
   <div class=set>
     <div class=hd>
