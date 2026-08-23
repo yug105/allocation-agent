@@ -604,3 +604,66 @@ Build the solver, validate it on generated data with subset structure injected b
 construction, and state in the README that BenchRec cannot exercise it. A
 capability that is tested but unexercised by the available data is honest. A
 capability claimed on data that cannot demonstrate it is not.
+
+---
+
+## Group solver built and evaluated on ReconRiver
+
+BenchRec has no subset-sum structure (measured earlier), so the solver is
+evaluated on **ReconRiver** -- a synthetic 3-way reconciliation set that does:
+`sum(net_amount) == bank credited_amount` holds exactly for **99.3%** of 1,499
+settlement batches, median 3 payments per batch, up to 22.
+
+Batch ids are **hidden** from the solver. It gets a bank credit and a pool of
+plausible payments (same currency, settlement day -2 .. day 0) and must recover
+the membership.
+
+### Two evaluation bugs before any real number
+
+**Same-day pool contained none of the answer.** Payments book 1-2 days *before*
+settlement; **zero** land on the settlement day. My first pool was `day == day`,
+so the true batch was never present and 68.6% came back infeasible. The solver
+was right and the question was wrong.
+
+**A stale cap in the eval script** refused 71% of instances at `max_candidates=40`
+while the solver default was 64.
+
+Both found by asking "is the answer even in the pool?" -- which should have been
+the first check, not the third.
+
+### Result
+
+Pool median 98, p90 775. True batch present in the pool for **97%** of
+settlements.
+
+| cap | exact set | right sum, wrong set | infeasible | too large | exact among attempted |
+|---|---|---|---|---|---|
+| 64 | 1.2% | 0.9% | 0.0% | 97.9% | **59.3%** |
+| 128 | 28.9% | 34.9% | 0.5% | 35.8% | **45.0%** |
+| 256 | 28.9% | 34.9% | 0.5% | 35.8% | 45.0% |
+
+Median solve 1.5 ms, p99 6 ms.
+
+### What this actually shows
+
+**The arithmetic is solved. The identification is not.**
+
+34.9% of the time the solver returns a subset that sums to the target exactly and
+is **not the true batch**. With 98 candidates and a 3-element answer there are
+astronomically many subsets hitting any given total, and amount alone cannot
+distinguish them. This is not a solver defect -- it is the problem being
+genuinely under-determined at these pool sizes.
+
+Smaller pools help sharply: **59.3% exact at <=64 candidates against 45.0% at
+<=128**. Tighter blocking is worth more here than a better solver.
+
+### The design consequence
+
+A subset that sums correctly is **not** evidence it is the right subset. So the
+solver must not auto-post on a single solution -- it should either confirm the
+solution is *unique*, or hand the reviewer the candidate subsets ranked by a
+second signal.
+
+Posting a wrong-but-balancing subset is the worst failure this system can
+produce: the books balance, the audit trail looks clean, and the money is
+attributed to the wrong invoices. Left as detect-and-route.
