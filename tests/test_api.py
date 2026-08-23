@@ -377,3 +377,100 @@ def test_the_page_can_reach_every_endpoint_a_visitor_needs(client):
     page = client.get("/").text
     for route in ("/api/meta", "/api/run", "/api/settlements", "/api/reconcile"):
         assert route in page, f"{route} is built but unreachable from the page"
+
+
+# --------------------------------------------------------------------------- #
+# The direct path.
+#
+# Two defects found by running the sample pair on the upload tab:
+#
+#   * With one candidate, `margin` fell back to 1.0, so confidence was always
+#     sigmoid(1.0) = 73.1% -- permanently below the 85% base bar. A lone
+#     candidate could never post, however exact the match. BenchRec never
+#     returns fewer than 4 candidates, so no existing test could reach it.
+#   * The grouping check ran before ranking and short-circuited it, letting a
+#     63% guess overrule an exact amount match the ranker was certain of.
+#
+# Measured on the held-out set: where exactly one candidate matches the amount
+# exactly, it is the right answer 98.98% of the time (2,321 of 2,345), and only
+# 0.68% of those records were actually grouped. So an exact amount match is
+# direct evidence and is treated as such -- which is what the design specified
+# for the direct-key component all along.
+# --------------------------------------------------------------------------- #
+
+def _pair(bank, ledger):
+    return {"bank": ("b.csv", io.BytesIO(bank.encode()), "text/csv"),
+            "ledger": ("l.csv", io.BytesIO(ledger.encode()), "text/csv")}
+
+
+def _one(client, bank, ledger):
+    return client.post("/api/reconcile", files=_pair(bank, ledger)).json()["results"][0]
+
+
+def test_a_lone_exact_amount_match_is_posted_not_left_at_73_percent(client):
+    r = _one(client,
+             "id,account,amount,date\nB1,A-1,80.50,2026-03-02\n",
+             "invoice,account,amount,date\nINV-1,A-1,80.50,2026-03-03\n")
+    assert r["matched_key"] == "INV-1"
+    assert r["outcome"] == "posted"
+    assert r["confidence"] > 0.9
+
+
+def test_a_lone_candidate_that_does_not_match_the_amount_is_not_posted(client):
+    """There is no margin and no exact-amount evidence, so there is nothing to
+    be confident from. Inventing a number here is what produced the bug."""
+    r = _one(client,
+             "id,account,amount,date\nB1,A-1,80.50,2026-03-02\n",
+             "invoice,account,amount,date\nINV-1,A-1,4000.00,2026-03-03\n")
+    assert r["outcome"] != "posted"
+
+
+def test_an_exact_amount_match_is_not_overruled_by_the_grouping_guess(client):
+    """A single ledger entry accounting for the whole amount defeats the
+    premise of the grouped path, which is that no single entry explains it."""
+    r = _one(client,
+             "id,account,amount,date\nB1,A-1,4300.00,2026-03-04\n",
+             "invoice,account,amount,date\n"
+             "INV-1,A-1,1250.00,2026-03-01\nINV-2,A-1,4300.00,2026-03-03\n"
+             "INV-3,A-1,120.00,2026-03-06\n")
+    assert r["matched_key"] == "INV-2"
+    assert r["outcome"] == "posted"
+
+
+def test_two_candidates_with_the_same_exact_amount_do_not_take_the_direct_path(client):
+    """Two entries of 500 both explain a 500 credit. The amount cannot choose
+    between them, so this is a ranking question, not a direct one."""
+    r = _one(client,
+             "id,account,amount,date\nB1,A-1,500.00,2026-03-02\n",
+             "invoice,account,amount,date\n"
+             "INV-1,A-1,500.00,2026-03-01\nINV-2,A-1,500.00,2026-03-03\n")
+    assert r["outcome"] != "posted" or r["confidence"] < 0.99
+
+
+def test_the_direct_path_is_named_in_the_audit_log(client):
+    body = client.post("/api/reconcile", files=_pair(
+        "id,account,amount,date\nB1,A-1,80.50,2026-03-02\n",
+        "invoice,account,amount,date\nINV-1,A-1,80.50,2026-03-03\n")).json()
+    trail = client.get(f"/api/run/{body['run_id']}/audit").json()
+    assert trail["decisions"][0]["path"] == "direct"
+
+
+def test_a_large_exact_match_still_answers_to_the_amount_scaled_bar(client):
+    """The direct path supplies evidence; it does not bypass the gate.
+
+    The bar rises 2 points per decade above a 100.00 reference, so 98.98%
+    evidence carries an exact match up to about a billion and no further. Above
+    that the required confidence exceeds what this evidence is worth, and even
+    a perfect amount match goes to a person.
+    """
+    r = _one(client,
+             "id,account,amount,date\nB1,A-1,5000000000.00,2026-03-02\n",
+             "invoice,account,amount,date\nINV-1,A-1,5000000000.00,2026-03-03\n")
+    assert r["outcome"] == "queued"
+
+
+def test_the_direct_match_says_in_plain_words_why_it_was_certain(client):
+    r = _one(client,
+             "id,account,amount,date\nB1,A-1,80.50,2026-03-02\n",
+             "invoice,account,amount,date\nINV-1,A-1,80.50,2026-03-03\n")
+    assert "exact" in r["explanation"].lower()

@@ -972,3 +972,97 @@ no built endpoint unreachable from the page.
 The last one exists because the page had been reading `m.n_keys` and `m.n_train`
 against a meta endpoint that returns `n_demo_keys` and `trained_on` — two of the
 three dataset figures rendered as nothing at all, and nothing failed.
+
+---
+
+## The sample pair I shipped got 3 of 4 wrong, and both causes were real
+
+The "use a sample pair" button exists so a judge sees the upload path work in
+one click. Run against four rows whose answers are obvious, it matched one:
+
+```
+B-1002    80.50  ->  INV-502   73.1%   under the 85% bar, sent for review
+B-1003  4,300.00 ->  —         63% "one payment covering several entries"
+```
+
+Both of those have an exact-amount, same-account entry sitting in the ledger.
+Two distinct defects, and the sample data only made them visible.
+
+### The 73.1% was a constant wearing a measurement's clothes
+
+```python
+margin = float(scores[order[0]] - scores[order[1]])  if len(order) > 1 else 1.0
+confidence = 1 / (1 + exp(-margin))
+```
+
+With one candidate there is no runner-up, so `margin` fell back to `1.0` and
+confidence became `sigmoid(1.0) = 0.731` — **every time, for every record, at
+any amount**. The base bar is 0.85. So a lone candidate could never post, no
+matter how perfect the match. Not "rarely": never.
+
+Why no test caught it: blocking never returns fewer than four candidates on
+BenchRec.
+
+```
+candidates returned, held-out set:
+    4 candidates :    390
+   5+ candidates :   3610
+```
+
+**Zero records can reach the branch.** Every test I had ran on that
+distribution, so the branch was unreachable in test and hit constantly by small
+uploaded files — the exact case the feature was built for. A dataset that never
+exercises a path is not coverage of it.
+
+### The grouping check was overruling evidence it cannot read
+
+`B-1003` had an exact match the ranker scored at 100%, and a 63% "looks
+grouped" guess ran first and discarded it. Rather than argue about which should
+win, I measured the detector on that subpopulation:
+
+| records with exactly one exact-amount candidate | |
+|---|---|
+| grouping check fired | 41 |
+| …of which actually grouped | **5 (12.2%)** |
+| …so it was wrong on | **36 (87.8%)** |
+| check stayed quiet | 2,304 (11 actually grouped) |
+
+The detector is right **96.3%** of the time overall and **12.2%** here. A single
+entry accounting for the whole amount defeats the premise of the grouped path,
+and the detector has no feature that can see it.
+
+### Fixing it twice, the second time properly
+
+First attempt: give a lone exact match its own path at measured confidence
+(98.98%, from 2,321 of 2,345 held-out records) and skip the grouping check.
+That worked on the sample and cost real money on the measured set:
+
+| | posted | precision | straight-through |
+|---|---|---|---|
+| before | 3,115 | **99.45%** | 77.88% |
+| bypass the check | 3,172 | 98.99% | 79.30% |
+
++57 posted, +42 right, **+15 wrong** — marginal quality 74%, against a ranker
+measured at 99.45%. I had conflated two things: *the grouping check should not
+overrule an exact match* (justified, 87.8% wrong) and *0.9898 should replace the
+ranker's judgement* (not justified at all — the ranker has a real margin
+whenever there are several candidates).
+
+Separating them: the grouping check is skipped only on a lone exact match; the
+ranker still decides; and the measured 98.98% is used **only when there is no
+runner-up to form a margin from** — the actual bug.
+
+| | posted | precision | straight-through |
+|---|---|---|---|
+| before | 3,115 | 99.45% | 77.88% |
+| bypass the check | 3,172 | 98.99% | 79.30% |
+| **shipped** | **3,176** | **99.31%** | **79.40%** |
+
+Better than the bypass on *both* axes — more posted at higher precision. Against
+the original, +61 auto-posts for −0.14pp precision: +56 right, +5 wrong,
+marginal quality 92%.
+
+**The lesson is about the first version, not the third.** It made the sample
+look right and the measured set worse, and I would have shipped it if I had
+stopped at the sample. A demo that starts working is not evidence the change was
+correct — the held-out set is, and it disagreed.
