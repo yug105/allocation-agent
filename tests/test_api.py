@@ -765,3 +765,34 @@ def test_an_unresolved_credit_says_only_what_is_known(client):
         assert not r["components"]
         assert r["tone"] != "good"
         assert r["verdict"] == "Could not resolve"
+
+
+# --------------------------------------------------------------------------- #
+# The page renders the arithmetic as its headline, then itemises the payments.
+# The explanation restated the same equation a third time, so a recovered
+# credit read as three copies of one fact and the sentence that actually
+# carried a judgement was buried at the end of the repetition.
+# --------------------------------------------------------------------------- #
+
+def test_the_explanation_does_not_restate_the_arithmetic(settled):
+    """`3,989.47 = 1,899.61 + 2,089.86` is already the headline and the list."""
+    solved = [r for r in settled["results"] if r["components"]]
+    assert solved
+    for r in solved:
+        equation = " + ".join(f"{c['amount']:,.2f}" for c in r["components"])
+        assert equation not in r["explanation"], (
+            f"{r['settlement_id']} repeats its own arithmetic")
+
+
+def test_a_recovered_credit_says_what_the_arithmetic_cannot(settled):
+    """That the subset is the recorded batch, not merely that it adds up."""
+    hits = [r for r in settled["results"] if r["exact"]]
+    assert hits
+    for r in hits:
+        assert "record" in r["explanation"].lower()
+
+
+def test_a_wrong_group_keeps_the_sentence_that_matters(settled):
+    for r in settled["results"]:
+        if r["status"] == "solved" and not r["exact"]:
+            assert "not the recorded batch" in r["explanation"]

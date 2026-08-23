@@ -299,10 +299,19 @@ def create_app() -> FastAPI:
                 exact += is_exact
                 wrong += (not is_exact)
                 bucket["recovered" if is_exact else "wrong"] += 1
-                status, expl = ("solved", _sum_sentence(state, st, chosen))
-                if not is_exact:
-                    expl += (" This balances but is not the recorded batch — a summing "
-                             "subset is not proof of the right subset, so it goes to review.")
+                # The arithmetic is the page's headline and its itemised list.
+                # Restating it here made a recovered credit read as three copies
+                # of one fact, with the sentence carrying the actual judgement
+                # buried at the end. This says only what the sum cannot.
+                status = "solved"
+                if is_exact:
+                    expl = (f"These {len(chosen)} payments are the ones the settlement "
+                            f"file records for this credit, found from a pool of "
+                            f"{len(pool_ids)} without being told the batch number.")
+                else:
+                    expl = ("This balances but is not the recorded batch — a summing "
+                            "subset is not proof of the right subset, so it goes to "
+                            "review.")
             elif r.status is SolverStatus.AMBIGUOUS:
                 ambiguous += 1
                 bucket["ambiguous"] += 1
@@ -480,11 +489,6 @@ def create_app() -> FastAPI:
 
     return app
 
-
-def _sum_sentence(state: _State, st: dict, chosen: list[str]) -> str:
-    parts = " + ".join(f"{state.payments[p]['amount_minor'] / 100:,.2f}" for p in chosen)
-    return (f"{st['amount_minor'] / 100:,.2f} = {parts}  "
-            f"({len(chosen)} payment{'s' if len(chosen) != 1 else ''})")
 
 
 

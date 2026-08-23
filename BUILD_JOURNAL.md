@@ -1353,3 +1353,32 @@ I removed it. It is the same defect as the badge that said "Found the group"
 over a wrong answer and the paragraph that skipped size 4: presenting a
 coincidence with the grammar of evidence. That it appeared in the very work
 written to fix that pattern is the part worth remembering.
+
+---
+
+## Three copies of one fact
+
+A recovered credit rendered like this:
+
+```
+3,989.47 = 1,899.61 + 2,089.86            <- headline
+  SYNTH-PROC-000970      1,899.61         <- itemised, with provenance
+  SYNTH-PROC-001280      2,089.86
+3,989.47 = 1,899.61 + 2,089.86 (2 payments)   <- explanation, saying it again
+```
+
+The explanation was `_sum_sentence`, written back when the arithmetic was the
+thing that needed showing. Once the page rendered the equation as a headline and
+itemised the payments beneath it, the sentence became a third copy — and on a
+wrong group it pushed the one line that carried a judgement to the end of two
+lines of repetition.
+
+Each line now says something the others cannot. The headline is the arithmetic,
+the list is which payments and from which orders, and the sentence is the part
+no sum can state:
+
+> These 2 payments are the ones the settlement file records for this credit,
+> found from a pool of 65 without being told the batch number.
+
+`_sum_sentence` had no callers left and was deleted rather than kept for later.
+A test now asserts no explanation restates its own arithmetic.
