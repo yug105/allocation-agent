@@ -84,10 +84,25 @@ class _State:
         self.detector = None
         self.prior = None
         self.meta: dict[str, Any] = {}
+        self.error: str | None = None
 
     def load(self) -> None:
+        """Load artifacts, or record why not.
+
+        Never raises. A failure here happens at process start, so an exception
+        kills the container before it serves anything and a visitor sees a blank
+        page instead of a message. Degrade to a reported 503 instead.
+        """
+        try:
+            self._load()
+        except Exception as exc:  # noqa: BLE001
+            self.error = f"{type(exc).__name__}: {exc}"
+            self.ready = False
+
+    def _load(self) -> None:
         demo_path, model_path = ARTIFACTS / "demo.json", ARTIFACTS / "models.pkl"
         if not (demo_path.exists() and model_path.exists()):
+            self.error = f"artifacts not found in {ARTIFACTS}"
             return
         demo = json.loads(demo_path.read_text())
         self.records = [
@@ -119,7 +134,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     def health() -> dict:
-        return {"ok": True, "models_loaded": state.ready, "n_demo_records": len(state.records)}
+        return {"ok": True, "models_loaded": state.ready,
+                "n_demo_records": len(state.records), "error": state.error}
 
     @app.get("/api/meta")
     def meta() -> dict:
@@ -129,7 +145,7 @@ def create_app() -> FastAPI:
     @app.post("/api/run")
     def run(req: RunRequest) -> dict:
         if not state.ready:
-            raise HTTPException(503, "models not loaded; run scripts/export_artifacts.py")
+            raise HTTPException(503, f"models not loaded: {state.error or 'unknown'}")
 
         records = state.records[: min(req.limit, len(state.records))]
         gate = GateConfig(review_all=req.review_all, policy_version="v0.1")

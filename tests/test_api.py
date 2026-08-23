@@ -162,3 +162,24 @@ def test_missing_artifacts_degrade_to_503_rather_than_crashing_at_import(monkeyp
     assert c.post("/api/run", json={"limit": 10}).status_code == 503
     monkeypatch.delenv("ARTIFACTS_DIR")
     importlib.reload(api)
+
+
+def test_a_corrupt_model_file_does_not_kill_the_process(monkeypatch, tmp_path):
+    """Artifact loading happens at process start. An exception there means the
+    container never serves anything and a visitor gets a blank page rather than
+    a message."""
+    import importlib
+
+    (tmp_path / "demo.json").write_text('{"records": [], "key_rows": []}')
+    (tmp_path / "models.pkl").write_bytes(b"not a pickle")
+    monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path))
+    import allocation_agent.api as api
+
+    importlib.reload(api)
+    c = TestClient(api.create_app())          # must not raise
+    h = c.get("/api/health").json()
+    assert h["models_loaded"] is False
+    assert h["error"]
+    assert c.post("/api/run", json={"limit": 5}).status_code == 503
+    monkeypatch.delenv("ARTIFACTS_DIR")
+    importlib.reload(api)

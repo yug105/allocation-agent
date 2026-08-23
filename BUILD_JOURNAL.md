@@ -698,3 +698,50 @@ each, assert eighty rows and no errors. It fails without the lock.
 **Kept because** the bug was predicted in writing, in the same document, and
 still shipped. Knowing a class of bug is not the same as checking for it in the
 place you have just written.
+
+---
+
+## Deploy failed on a missing shared library, and took the process with it
+
+Render built the image cleanly and the container died at start:
+
+```
+OSError: libgomp.so.1: cannot open shared object file: No such file or directory
+  lightgbm/libpath.py -> ctypes.cdll.LoadLibrary(...)
+```
+
+LightGBM links against the GNU OpenMP runtime. `python:3.11-slim` does not ship
+it. Locally it worked because macOS has its own OpenMP and my venv was never a
+slim Debian image -- the classic "works on my machine" gap, in its most literal
+form.
+
+**Fix:** `apt-get install libgomp1` in the image, plus a build-time smoke import:
+
+```dockerfile
+RUN python -c "import lightgbm, allocation_agent.api; print('imports ok')"
+```
+
+That line turns a deploy-time crash into a build-time failure, which is cheaper
+to see and impossible to miss.
+
+### The worse half
+
+The library was missing *and* the process died. Artifact loading runs inside
+`create_app()`, so any exception there kills the container before it can serve a
+single request -- a visitor gets a blank page, not a message.
+
+I had already written a test asserting that *missing* artifacts degrade to a 503
+rather than crashing. It passed. It did not cover artifacts that exist and fail
+to load, which is what actually happened.
+
+`load()` now catches, records the reason, and reports it on `/api/health`, with a
+test that feeds it a deliberately corrupt pickle and asserts the app still boots.
+
+**Kept because** the test I wrote for this exact failure mode was too narrow, and
+the narrowness was invisible until reality picked the case I had not covered.
+
+### Also worth noting
+
+I could not verify the container locally: Docker CLI was installed but the daemon
+was not running, so `docker build` failed and I pushed unverified. The build-time
+import check is the compensating control for not being able to run the image.
