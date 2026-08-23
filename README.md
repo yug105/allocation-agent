@@ -162,6 +162,31 @@ uv run python scripts/train_multiplicity.py
 uv run python scripts/run_batch.py         # end-to-end + audit trail
 uv run python scripts/run_learning.py      # learning loop + all controls
 uv run python scripts/eval_solver.py       # group solver on ReconRiver
+```
+
+### Grouped settlements
+
+One bank credit, many payments. The solver gets the amount and a pool of ~100
+candidate payments and must recover which subset produced it -- **the batch
+identifier is never passed to it**. Evaluated on ReconRiver, whose settlement
+structure BenchRec does not have (measured; see the journal).
+
+| variant | coverage | precision | balanced-but-wrong | ties refused |
+|---|---|---|---|---|
+| reachability DP, first subset | 38.0% | 39.0% | 59.3% | -- |
+| smallest subset | 83.3% | 93.3% | 6.0% | -- |
+| smallest, refuse ties (shipped) | **75.3%** | **96.6%** | **2.7%** | 11.3% |
+
+`coverage` = credits whose recorded batch it recovered. `precision` = of the
+answers it gave, how many were the recorded batch. Reporting either alone is how
+a solver looks good and is not: the first row answers plenty and is wrong more
+often than right.
+
+The shipped variant gives up 8pp of coverage to cut wrong answers by half. A
+credit it refuses goes to a reviewer; a credit it gets wrong balances the books
+against the wrong invoices, which is the more expensive of the two.
+
+```
 
 uv run uvicorn allocation_agent.api:create_app --factory --reload   # the service
 ```

@@ -33,6 +33,7 @@ from allocation_agent.decide.narrate import Narrator, diagnose_residual
 from allocation_agent.match.blocker import BlockingConfig, block
 from allocation_agent.match.features import build_key_stats, featurise
 from allocation_agent.match.multiplicity import featurise_multiplicity
+from allocation_agent.match.solver import SolverConfig, SolverStatus, solve_subset
 from allocation_agent.report.audit import AuditLog, RunConfig
 from allocation_agent.stores.keys import KeyIndex, KeyRow
 from allocation_agent.types import BankRecord
@@ -66,6 +67,11 @@ class RunRequest(BaseModel):
     mult_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
+class SettlementRequest(BaseModel):
+    limit: int = Field(default=50, gt=0, le=10**6)
+    max_pool: int = Field(default=128, ge=2, le=512)
+
+
 class ConnectRequest(BaseModel):
     key_id: str
 
@@ -85,6 +91,8 @@ class _State:
         self.prior = None
         self.meta: dict[str, Any] = {}
         self.error: str | None = None
+        self.settlements: list[dict] = []
+        self.payments: dict[str, dict] = {}
 
     def load(self) -> None:
         """Load artifacts, or record why not.
@@ -118,6 +126,13 @@ class _State:
             bundle["ranker"], bundle["detector"], bundle["prior"]
         )
         self.meta = json.loads((ARTIFACTS / "meta.json").read_text())
+
+        rr = ARTIFACTS / "reconriver.json"
+        if rr.exists():
+            data = json.loads(rr.read_text())
+            self.settlements = data["settlements"]
+            self.payments = {p["payment_id"]: p for p in data["payments"]}
+
         self.ready = True
 
 
@@ -224,6 +239,84 @@ def create_app() -> FastAPI:
             "n_exceptions": len(exceptions),
         }
 
+    @app.post("/api/settlements")
+    def settlements(req: SettlementRequest) -> dict:
+        """Recover which payments produced each bank credit.
+
+        The batch identifier is never shown to the solver: it gets the credit
+        amount and a pool of plausible payments and must find the subset.
+
+        A subset that sums correctly is **not** evidence it is the right subset --
+        with a pool of ~100 payments many subsets hit any given total. The first
+        version of this endpoint reported "solved" for all of them; 51.3% were
+        the wrong set. So two numbers are reported, never one: **coverage** (how
+        many credits got an answer) and **precision** (how many of those answers
+        were the recorded batch). Ties are returned as ambiguous, not resolved.
+        """
+        if not state.settlements:
+            raise HTTPException(503, "settlement demo data not loaded")
+
+        items = state.settlements[: min(req.limit, len(state.settlements))]
+        cfg = SolverConfig(tolerance_minor=0, max_candidates=req.max_pool)
+        out, solved, exact, wrong, ambiguous, unresolved = [], 0, 0, 0, 0, 0
+        started = time.perf_counter()
+
+        for st in items:
+            pool_ids = [p for p in st["pool"] if p in state.payments]
+            amounts = [state.payments[p]["amount_minor"] for p in pool_ids]
+            r = solve_subset(target_minor=st["amount_minor"], candidates_minor=amounts, config=cfg)
+
+            chosen = [pool_ids[i] for i in r.indices]
+            is_exact = sorted(chosen) == sorted(st["truth"])
+
+            if r.status is SolverStatus.SOLVED:
+                solved += 1
+                exact += is_exact
+                wrong += (not is_exact)
+                status, expl = ("solved", _sum_sentence(state, st, chosen))
+                if not is_exact:
+                    expl += (" This balances but is not the recorded batch — a summing "
+                             "subset is not proof of the right subset, so it goes to review.")
+            elif r.status is SolverStatus.AMBIGUOUS:
+                ambiguous += 1
+                status, expl = ("ambiguous",
+                    f"Two different sets of {r.subset_size} payments both reach "
+                    f"{st['amount_minor'] / 100:,.2f} exactly. The amounts do not choose "
+                    "between them, so neither is claimed.")
+            elif r.status is SolverStatus.TOO_LARGE:
+                unresolved += 1
+                status, expl = ("unresolved",
+                    f"{r.n_considered} candidate payments exceeds the {req.max_pool} cap. "
+                    "Refused rather than truncated to fit.")
+            else:
+                unresolved += 1
+                status, expl = ("unresolved",
+                    f"No combination of the {r.n_considered} candidate payments sums to this credit.")
+
+            out.append({
+                "settlement_id": st["settlement_id"],
+                "amount": round(st["amount_minor"] / 100, 2),
+                "currency": st["currency"], "booked_at": st["booked_at"],
+                "status": status, "exact": is_exact, "pool_size": len(pool_ids),
+                "components": [{"payment_id": p, "amount": round(state.payments[p]["amount_minor"] / 100, 2),
+                                "order_id": state.payments[p].get("order_id", "")} for p in chosen],
+                "true_size": len(st["truth"]),
+                "explanation": expl,
+            })
+
+        n = len(items)
+        return {
+            "n_settlements": n, "solved": solved, "ambiguous": ambiguous,
+            "unresolved": unresolved,
+            # coverage: got an answer at all. precision: that answer was right.
+            # Reporting either one alone is how a solver looks good and is not.
+            "exact_recovery_rate": exact / n if n else 0.0,
+            "precision": exact / solved if solved else 0.0,
+            "wrong_set_rate": wrong / n if n else 0.0,
+            "seconds": round(time.perf_counter() - started, 3),
+            "results": out,
+        }
+
     @app.get("/api/run/{run_id}/audit")
     def audit_trail(run_id: str) -> dict:
         rows = audit.decisions(run_id=run_id)
@@ -259,6 +352,12 @@ def create_app() -> FastAPI:
     return app
 
 
+def _sum_sentence(state: _State, st: dict, chosen: list[str]) -> str:
+    parts = " + ".join(f"{state.payments[p]['amount_minor'] / 100:,.2f}" for p in chosen)
+    return (f"{st['amount_minor'] / 100:,.2f} = {parts}  "
+            f"({len(chosen)} payment{'s' if len(chosen) != 1 else ''})")
+
+
 def _p_multiple(state: _State, rec: BankRecord, cands: list[str]) -> float:
     amts = [a for k in cands for a in state.key_stats[k].amounts if k in state.key_stats]
     has_exact = rec.amount_minor in amts if amts else False
@@ -277,15 +376,19 @@ def _exception(rec: BankRecord, reason: str, explanation: str, n_candidates: int
 _PAGE = """<!doctype html><meta charset=utf-8><title>Allocation Agent</title>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <style>
-:root{--bg:#0d1117;--fg:#e6edf3;--dim:#8b949e;--line:#21262d;--card:#161b22;--ok:#3fb950;--warn:#d29922}
+:root{--bg:#0d1117;--fg:#e6edf3;--dim:#8b949e;--line:#21262d;--card:#161b22;--ok:#3fb950;--warn:#d29922;--bad:#f85149}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);
 font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;padding:2rem 1.25rem}
 .w{max-width:60rem;margin:0 auto}h1{font-size:1.3rem;margin:0 0 .3rem}
-p.sub{color:var(--dim);margin:0 0 1.5rem}
+p.sub{color:var(--dim);margin:0 0 1.25rem}
 button{background:#238636;color:#fff;border:0;padding:.6rem 1.1rem;border-radius:6px;
 cursor:pointer;font:inherit}button:disabled{opacity:.5;cursor:default}
 label{color:var(--dim);margin-right:1rem}input,select{background:var(--card);color:var(--fg);
 border:1px solid var(--line);border-radius:6px;padding:.4rem .6rem;font:inherit}
+.tabs{display:flex;gap:.25rem;border-bottom:1px solid var(--line);margin:0 0 1.25rem}
+.tabs button{background:0;color:var(--dim);border:0;border-bottom:2px solid transparent;
+padding:.5rem .9rem;border-radius:0}
+.tabs button[aria-selected=true]{color:var(--fg);border-bottom-color:#238636}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:1px;
 background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:1.5rem 0}
 .c{background:var(--card);padding:.9rem 1rem}.c .n{font-size:1.5rem;font-weight:600}
@@ -294,37 +397,79 @@ table{width:100%;border-collapse:collapse;font-size:.85rem;margin-top:.5rem}
 th{text-align:left;color:var(--dim);font-weight:500;border-bottom:1px solid var(--line);padding:.5rem .6rem .5rem 0}
 td{padding:.5rem .6rem .5rem 0;border-bottom:1px solid var(--line);vertical-align:top}
 .tag{font-size:.72rem;padding:.15rem .45rem;border-radius:4px;border:1px solid currentColor;white-space:nowrap}
-.g{color:var(--ok)}.y{color:var(--warn)}
+.g{color:var(--ok)}.y{color:var(--warn)}.r{color:var(--bad)}
+.set{border:1px solid var(--line);border-radius:8px;background:var(--card);padding:.9rem 1rem;margin:.6rem 0}
+.set .hd{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.sum{font-size:1.05rem;margin:.5rem 0 .1rem;letter-spacing:-.01em}
+.sum b{color:var(--ok)}
+.parts{list-style:none;padding:0;margin:.5rem 0 0}
+.parts li{display:flex;justify-content:space-between;gap:1rem;color:var(--dim);font-size:.82rem;
+padding:.15rem 0;border-top:1px dashed var(--line)}
+.why{color:var(--dim);font-size:.82rem;margin:.5rem 0 0}
+.hide{display:none}
 </style>
 <div class=w>
 <h1>Allocation Agent</h1>
-<p class=sub>Matches bank records to ledger allocation keys. Demo runs on
+
+<div class=tabs>
+  <button id=t1 aria-selected=true>Matching</button>
+  <button id=t2 aria-selected=false>Grouped settlements</button>
+</div>
+
+<section id=v1>
+<p class=sub>Matches bank records to ledger allocation keys. Runs on
 <b>held-out records the models never saw in training</b>, so the precision below is
 measured against ground truth, not asserted.</p>
-
 <div>
   <label>records <input id=n type=number value=500 min=1 max=4000 style=width:6rem></label>
   <label><input id=all type=checkbox> review everything</label>
   <button id=go>Run</button>
 </div>
-
 <div id=out></div>
+</section>
+
+<section id=v2 class=hide>
+<p class=sub>One bank credit, many payments. The solver is given the amount and a pool of
+~100 candidate payments and must recover which subset produced it &mdash;
+<b>the batch identifier is never passed to it</b>. A subset that balances is not proof
+it is the right subset, so coverage and precision are reported separately.</p>
+<div>
+  <label>settlements <input id=sn type=number value=60 min=1 max=150 style=width:5rem></label>
+  <label>pool cap <input id=sp type=number value=128 min=2 max=512 style=width:5rem></label>
+  <button id=sgo>Solve</button>
+</div>
+<div id=sout></div>
+</section>
 </div>
 <script>
-const $=s=>document.querySelector(s), fmt=n=>n.toLocaleString();
-$('#go').onclick=async()=>{
-  const b=$('#go'); b.disabled=true; b.textContent='running...';
-  $('#out').innerHTML='';
+const $=s=>document.querySelector(s), fmt=n=>n.toLocaleString(),
+      pct=x=>(x*100).toFixed(1)+'%',
+      money=n=>n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+
+function tab(sel){
+  $('#t1').setAttribute('aria-selected', sel===1); $('#t2').setAttribute('aria-selected', sel===2);
+  $('#v1').classList.toggle('hide', sel!==1); $('#v2').classList.toggle('hide', sel!==2);
+}
+$('#t1').onclick=()=>tab(1); $('#t2').onclick=()=>tab(2);
+
+async function post(url, body, btn, label){
+  btn.disabled=true; const was=btn.textContent; btn.textContent='running...';
   try{
-    const r=await fetch('/api/run',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({limit:+$('#n').value, review_all:$('#all').checked})});
+    const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify(body)});
     if(!r.ok) throw new Error((await r.json()).detail||r.statusText);
-    const d=await r.json(); render(d);
-  }catch(e){ $('#out').innerHTML='<p class=y>'+e.message+'</p>'; }
-  b.disabled=false; b.textContent='Run';
+    return await r.json();
+  } finally { btn.disabled=false; btn.textContent=was; }
+}
+
+$('#go').onclick=async()=>{
+  $('#out').innerHTML='';
+  try{ render(await post('/api/run',{limit:+$('#n').value, review_all:$('#all').checked}, $('#go'))); }
+  catch(e){ $('#out').innerHTML='<p class=r>'+e.message+'</p>'; }
 };
+
 function render(d){
-  const s=d.summary, pct=x=>(x*100).toFixed(1)+'%';
+  const s=d.summary;
   $('#out').innerHTML=`
   <div class=grid>
     <div class=c><div class=n>${fmt(d.n_records)}</div><div class=l>records</div></div>
@@ -340,9 +485,50 @@ function render(d){
   <h3 style="font-size:1rem;margin:1.5rem 0 0">Exceptions (${fmt(d.n_exceptions)})</h3>
   <table><tr><th>record</th><th>amount</th><th>reason</th><th>explanation</th></tr>
   ${d.exceptions.slice(0,40).map(e=>`<tr><td>${e.record_id}</td>
-   <td style=text-align:right>${e.amount.toLocaleString(undefined,{minimumFractionDigits:2})}</td>
+   <td style=text-align:right>${money(e.amount)}</td>
    <td><span class="tag ${e.reason==='suspected_grouped'?'y':''}">${e.reason}</span></td>
    <td>${e.explanation}</td></tr>`).join('')}
   </table>`;
+}
+
+$('#sgo').onclick=async()=>{
+  $('#sout').innerHTML='';
+  try{ renderSettlements(await post('/api/settlements',
+        {limit:+$('#sn').value, max_pool:+$('#sp').value}, $('#sgo'))); }
+  catch(e){ $('#sout').innerHTML='<p class=r>'+e.message+'</p>'; }
+};
+
+function renderSettlements(d){
+  const cls={solved:'g',ambiguous:'y',unresolved:'y'};
+  // Correct answers first -- they are what the arithmetic view is for -- then
+  // the ties and refusals, which are the point of reporting two numbers.
+  const rank=r=>r.exact?0:(r.status==='solved'?1:r.status==='ambiguous'?2:3);
+  const rows=[...d.results].sort((a,b)=>rank(a)-rank(b));
+  $('#sout').innerHTML=`
+  <div class=grid>
+    <div class=c><div class=n>${fmt(d.n_settlements)}</div><div class=l>credits</div></div>
+    <div class="c"><div class="n g">${pct(d.precision)}</div><div class=l>precision of answers</div></div>
+    <div class=c><div class=n>${pct(d.exact_recovery_rate)}</div><div class=l>coverage</div></div>
+    <div class="c"><div class="n y">${fmt(d.ambiguous)}</div><div class=l>ties refused</div></div>
+    <div class=c><div class=n>${fmt(d.unresolved)}</div><div class=l>unresolved</div></div>
+    <div class=c><div class=n>${d.seconds}s</div><div class=l>total</div></div>
+  </div>
+  <p class=sub><b>coverage</b> = credits whose recorded batch it recovered &middot;
+  <b>precision</b> = of the answers it gave, how many were the recorded batch &middot;
+  balancing-but-wrong ${pct(d.wrong_set_rate)}</p>
+  ${rows.map(r=>`
+  <div class=set>
+    <div class=hd>
+      <span>${r.settlement_id} &middot; <span class=y>${r.currency}</span> ${money(r.amount)}</span>
+      <span><span class="tag ${r.exact?'g':cls[r.status]||''}">${r.exact?'recovered':r.status}</span>
+      <span style="color:var(--dim);font-size:.78rem"> pool ${r.pool_size}</span></span>
+    </div>
+    ${r.components.length?`<div class=sum><b>${money(r.amount)}</b> = ${
+      r.components.map(c=>money(c.amount)).join(' + ')}</div>
+    <ul class=parts>${r.components.map(c=>
+      `<li><span>${c.payment_id}${c.order_id?' &middot; '+c.order_id:''}</span>
+       <span>${money(c.amount)}</span></li>`).join('')}</ul>`:''}
+    <p class=why>${r.explanation}</p>
+  </div>`).join('')}`;
 }
 </script>"""

@@ -783,3 +783,96 @@ live demo sees a number an order of magnitude lower.
 
 Both figures are now stated, with the hardware attached to each. A throughput
 claim without the machine it was measured on is not a claim.
+
+---
+
+## I cherry-picked my own demo, and the number that exposed it was 100%
+
+Wiring the solver into the demo, I wrote an exporter that pulled 150
+settlements out of ReconRiver. The endpoint came back **100% exact recovery**.
+
+That is not a good result, it is a broken measurement. Two lines of the
+exporter did it:
+
+```python
+if 2 <= len(mem) <= 8:            # only these batch sizes
+if len(pool) > 60:                # and shrink the pool, keeping the answer
+    pool = pd.concat([true_batch, pool.sample(55)])
+```
+
+The filter dropped every hard instance, and the subsample guaranteed the answer
+was present in a pool small enough to be easy. I had built a demo dataset that
+could only produce a good number. Nothing about it was deliberate -- I wrote
+both lines to make the instances tractable and did not notice that "tractable"
+and "easy" were the same edit.
+
+Deleted both. Representative export: pool median **97**, p90 777, all batch
+sizes. Exact recovery fell from 100% to **38.0%**, and **59.3%** of the answers
+it gave were subsets that balanced and were not the recorded batch.
+
+**A demo dataset needs the same split discipline as a training set.** I had been
+careful about temporal leakage in the ranker for weeks and then hand-picked the
+solver's evaluation set without registering it as the same class of mistake.
+
+### The defect the honest number exposed
+
+One case made it obvious:
+
+```
+SYNTH-BANK-000001   773.33   pool 97   true batch size 1
+  773.33 = 144.98 + 170.34 + 45.36 + 367.82 + 44.83   (5 payments)
+```
+
+The true answer was a **single payment of 773.33 sitting in the pool**. The
+solver walked past it and returned five unrelated payments that happened to add
+up. The bitset DP answers "is this total reachable", and the backtrack then
+returns whichever subset falls out of descending index order. Nothing anywhere
+in it prefers a likely subset over an unlikely one.
+
+I had recorded this as "the problem is genuinely under-determined" (above). That
+was half right and it let me stop early. The problem *is* under-determined, and
+the solver was also making it much worse than it needed to be.
+
+### Two priors, both from how settlement works
+
+**Fewest components wins.** Batches are small; pools are not. Each additional
+component multiplies the coincidental subsets available, so the smallest
+balancing subset is by a wide margin the likeliest one. This has to be a search
+over cardinality, not a filter applied afterwards -- so reachability is split by
+subset size, `layers[k]` holding the sums reachable using exactly *k* payments,
+and the answer is read out of the lowest non-empty layer.
+
+**A tie is not an answer.** If two different smallest subsets both balance, the
+amounts do not distinguish them, and picking by index order produces something
+that looks exactly like a match. Any rival subset of the same size must omit at
+least one member of the one found -- so dropping each member in turn and
+re-solving is a *complete* uniqueness test, not a sample. It costs k extra
+passes, k typically 2.
+
+| variant | coverage | precision | balanced-but-wrong | ties refused | p50 | p99 |
+|---|---|---|---|---|---|---|
+| reachability DP, first subset | 38.0% | 39.0% | 59.3% | -- | 2.5 ms | 14 ms |
+| smallest subset | 83.3% | 93.3% | 6.0% | -- | 16 ms | 37 ms |
+| smallest, refuse ties (shipped) | **75.3%** | **96.6%** | **2.7%** | 11.3% | 23 ms | 70 ms |
+
+`coverage` = credits whose recorded batch it recovered. `precision` = of the
+answers it gave, how many were the recorded batch.
+
+The shipped variant is **not** the top row on coverage, and that is the choice.
+It gives up 8pp of coverage to cut wrong answers from 6.0% to 2.7%; the 11.3% it
+refuses go to a reviewer as ties rather than into the ledger under a subset that
+merely balances. For a system that posts to a general ledger, an answer that is
+wrong is far more expensive than an answer that is absent -- the books balance,
+the audit trail looks clean, and the money sits against the wrong invoices.
+
+`max_subset_size` turned out **not** to be an accuracy lever: 8 and 64 give
+identical results, because min-cardinality search finds the real batch (median
+size 2) long before the cap matters. It is a latency guard and is documented as
+one rather than claimed as part of the gain.
+
+### What I would have shipped
+
+The version before this one reported a single number -- "solved" -- for 89.3% of
+settlements, of which more than half were wrong. Splitting one metric into
+**coverage and precision** is what made the defect visible; the aggregate hid it
+completely, and the cherry-picked export hid it twice over.

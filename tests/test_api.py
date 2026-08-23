@@ -183,3 +183,44 @@ def test_a_corrupt_model_file_does_not_kill_the_process(monkeypatch, tmp_path):
     assert c.post("/api/run", json={"limit": 5}).status_code == 503
     monkeypatch.delenv("ARTIFACTS_DIR")
     importlib.reload(api)
+
+
+# --------------------------------------------------------------------------- #
+# grouped settlements: the solver, wired in
+# --------------------------------------------------------------------------- #
+
+def test_settlement_run_recovers_grouped_payments(client):
+    """BenchRec has no subset-sum structure -- measured. ReconRiver does, so the
+    solver is demonstrated on the dataset that can actually exercise it."""
+    r = client.post("/api/settlements", json={"limit": 40})
+    assert r.status_code == 200
+    b = r.json()
+    assert b["n_settlements"] == 40
+    assert b["solved"] + b["ambiguous"] + b["unresolved"] == b["n_settlements"]
+
+
+def test_a_solved_settlement_shows_its_arithmetic(client):
+    b = client.post("/api/settlements", json={"limit": 40}).json()
+    solved = [s for s in b["results"] if s["status"] == "solved"]
+    assert solved, "expected at least one recoverable settlement"
+    s = solved[0]
+    assert abs(sum(p["amount"] for p in s["components"]) - s["amount"]) < 0.011
+    assert len(s["components"]) >= 1
+
+
+def test_exact_recovery_is_reported_against_ground_truth(client):
+    b = client.post("/api/settlements", json={"limit": 60}).json()
+    assert 0.0 <= b["exact_recovery_rate"] <= 1.0
+    assert b["wrong_set_rate"] >= 0.0
+
+
+def test_a_balancing_but_wrong_subset_is_not_reported_as_correct(client):
+    """A subset that sums correctly is not evidence it is the right subset.
+    Conflating the two is the worst failure this system could produce."""
+    b = client.post("/api/settlements", json={"limit": 60}).json()
+    assert b["exact_recovery_rate"] <= (b["solved"] / max(b["n_settlements"], 1)) + 1e-9
+
+
+def test_settlement_results_carry_an_explanation(client):
+    b = client.post("/api/settlements", json={"limit": 20}).json()
+    assert all(r["explanation"] for r in b["results"])

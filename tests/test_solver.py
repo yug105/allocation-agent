@@ -151,3 +151,80 @@ def test_a_candidate_is_used_at_most_once():
     """One payment cannot settle twice."""
     r = solve(1000, [500])
     assert r.status is SolverStatus.INFEASIBLE
+
+
+# --------------------------------------------------------------------------- #
+# which subset — a summing subset is not the same as the right subset
+#
+# Measured on ReconRiver: the plain DP solved 89.3% of settlements and 51.3%
+# of those were the wrong set. Two priors fix most of it, and both come from
+# how settlement actually works rather than from tuning against the answer.
+#
+#   1. Batches are small. Every extra component multiplies the number of
+#      coincidental subsets, so the fewest-component subset that balances is
+#      by far the likeliest one.
+#   2. If two different smallest subsets both balance, the evidence does not
+#      pick between them. That is ambiguity, and it must be reported as such
+#      rather than resolved by index order.
+# --------------------------------------------------------------------------- #
+
+def test_prefers_one_payment_over_a_coincidental_combination():
+    """The exact single match is the answer; 200+300+500 is a coincidence."""
+    r = solve(1000, [200, 300, 500, 1000])
+    assert r.indices == [3]
+
+
+def test_prefers_the_smaller_of_two_balancing_subsets():
+    r = solve(900, [100, 200, 600, 400, 500])
+    assert sorted(r.indices) == [3, 4]          # 400+500, not 100+200+600
+
+
+def test_two_distinct_smallest_subsets_are_reported_as_ambiguous():
+    """500+500 and 400+600 both balance with two payments. Nothing in the
+    amounts prefers either, so the solver must not pretend otherwise."""
+    r = solve(1000, [500, 500, 400, 600])
+    assert r.status is SolverStatus.AMBIGUOUS
+    assert r.indices == []
+
+
+def test_ambiguity_at_a_larger_size_does_not_block_a_unique_smaller_answer():
+    """1000 alone is unique at size 1; the size-2 ties below it are irrelevant."""
+    r = solve(1000, [1000, 500, 500, 400, 600])
+    assert r.status is SolverStatus.SOLVED
+    assert r.indices == [0]
+
+
+def test_the_uniqueness_check_can_be_turned_off():
+    """A reviewer triaging a queue may want the candidate anyway."""
+    r = solve(1000, [500, 500, 400, 600], require_unique=False)
+    assert r.status is SolverStatus.SOLVED
+    assert len(r.indices) == 2
+
+
+def test_a_subset_larger_than_the_size_cap_is_not_returned():
+    """Six payments summing to a target is weak evidence, not a match."""
+    r = solve(600, [100] * 6, max_subset_size=3)
+    assert r.status is SolverStatus.INFEASIBLE
+
+
+def test_the_size_cap_is_inclusive():
+    r = solve(300, [100] * 3, max_subset_size=3)
+    assert r.status is SolverStatus.SOLVED
+    assert len(r.indices) == 3
+
+
+def test_solved_result_reports_how_many_payments_it_used():
+    r = solve(900, [400, 500, 100, 200, 600])
+    assert r.subset_size == 2
+
+
+def test_duplicate_amounts_at_the_same_size_are_ambiguous_not_arbitrary():
+    """Two identical payments, either of which explains the credit."""
+    r = solve(500, [500, 500])
+    assert r.status is SolverStatus.AMBIGUOUS
+
+
+def test_an_ambiguous_result_says_how_big_the_tied_subsets_were():
+    """A reviewer needs to know whether two payments are in contention or six."""
+    r = solve(1000, [500, 500, 400, 600])
+    assert r.subset_size == 2
