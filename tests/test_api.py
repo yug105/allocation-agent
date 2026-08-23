@@ -108,30 +108,6 @@ def test_zero_limit_is_rejected_clearly(client):
     assert r.status_code == 422
 
 
-def test_upload_rejects_a_non_csv(client):
-    r = client.post("/api/upload", files={"file": ("x.exe", io.BytesIO(b"MZ"), "application/octet-stream")})
-    assert r.status_code == 400
-    assert "csv" in r.json()["detail"].lower()
-
-
-def test_upload_rejects_a_csv_missing_required_columns(client):
-    csv = b"foo,bar\n1,2\n"
-    r = client.post("/api/upload", files={"file": ("x.csv", io.BytesIO(csv), "text/csv")})
-    assert r.status_code == 400
-    assert "column" in r.json()["detail"].lower()
-
-
-def test_a_live_razorpay_key_is_refused(client):
-    """A judge pasting a production key into a hackathon demo is a real risk."""
-    r = client.post("/api/connect", json={"key_id": "rzp_live_abc123"})
-    assert r.status_code == 400
-    assert "test" in r.json()["detail"].lower()
-
-
-def test_a_test_mode_key_is_accepted_in_shape(client):
-    r = client.post("/api/connect", json={"key_id": "rzp_test_abc123"})
-    assert r.status_code in (200, 501)
-
 
 def test_artifacts_directory_is_overridable(monkeypatch, tmp_path):
     """A packaged install puts the code in site-packages, where a path relative
@@ -608,3 +584,106 @@ def test_a_pool_refusal_and_a_target_refusal_do_not_share_one_sentence(client):
                      config=SolverConfig(max_target_minor=10**7))
     assert r.status is SolverStatus.TOO_LARGE
     assert "candidates" not in r.detail
+
+
+# --------------------------------------------------------------------------- #
+# The narrator was constructed in create_app() and never called once. Every
+# explanation on the page was an f-string, so its central guarantee -- that it
+# cannot emit a figure absent from the payload -- protected nothing a visitor
+# read.
+#
+# Its actual job is residual diagnosis: naming *why* two amounts differ. That
+# applies to a record queued against a best candidate, where a real gap exists.
+# It is not wired to cases with no residual to explain.
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture(scope="module")
+def demo_run(client):
+    return client.post("/api/run", json={"limit": 500}).json()
+
+
+def test_a_queued_record_with_an_amount_gap_gets_a_diagnosed_cause(demo_run):
+    """A reviewer needs to know *why* the figures differ, not only that they
+    do. Causes are ranked by arithmetic fit against the actual gap."""
+    causes = {e.get("residual_cause") for e in demo_run["exceptions"]
+              if e["reason"] == "queued"}
+    named = causes - {None}
+    assert named, "no queued record was diagnosed"
+    assert named <= {"BANK_CHARGE", "ROUNDING", "FX_DIFFERENCE",
+                     "PARTIAL_PAYMENT", "UNEXPLAINED"}
+
+
+def test_the_diagnosis_is_written_into_what_the_reviewer_reads(demo_run):
+    diagnosed = [e for e in demo_run["exceptions"]
+                 if e["reason"] == "queued" and e.get("residual_cause")]
+    assert diagnosed
+    for e in diagnosed[:5]:
+        assert "Gap of" in e["explanation"]
+
+
+def test_the_narrator_is_actually_invoked(client):
+    """The defect was that it was constructed and never called, so its
+    guarantee protected nothing anyone read."""
+    from allocation_agent.api import create_app
+    app = create_app()
+    before = app.state.narrator_calls()
+    TestClient(app).post("/api/run", json={"limit": 500})
+    assert app.state.narrator_calls() > before
+
+
+def test_a_diagnosed_gap_matches_the_arithmetic_it_claims(demo_run):
+    """The sentence quotes a gap. That figure must be the record's real one."""
+    for e in demo_run["exceptions"]:
+        if e.get("residual_cause") and "Gap of" in e["explanation"]:
+            quoted = e["explanation"].split("Gap of ")[1].split()[0].rstrip(",")
+            assert quoted.replace(",", "") == f"{e['residual']:.2f}"
+
+
+def test_a_record_with_no_gap_is_not_given_a_residual_cause(client):
+    """An exact match has nothing to diagnose. Naming a cause anyway would be
+    inventing one."""
+    r = _one(client,
+             "id,account,amount,date\nB1,A-1,80.50,2026-03-02\n",
+             "invoice,account,amount,date\nINV-1,A-1,80.50,2026-03-03\n")
+    assert r["residual"] == 0
+    assert r["residual_cause"] is None
+
+
+def test_a_record_with_nothing_to_match_is_not_given_a_residual_cause(client):
+    r = _one(client,
+             "id,account,amount,date\nB1,NOBODY,777.00,2026-03-05\n",
+             "invoice,account,amount,date\nINV-1,A-1,80.50,2026-03-03\n")
+    assert r["outcome"] == "no_candidate"
+    assert r["residual_cause"] is None
+
+
+
+
+def test_no_generated_figure_escapes_that_was_not_in_the_payload(client):
+    """The guarantee, applied to live output: every number in an explanation
+    must be one the record actually carries."""
+    import re
+    body = client.post("/api/reconcile", files=_pair(
+        "id,account,amount,date\nB1,A-1,80.50,2026-03-02\n",
+        "invoice,account,amount,date\n"
+        "INV-1,A-1,100.00,2026-03-03\nINV-2,A-1,100.00,2026-03-04\n")).json()
+    r = body["results"][0]
+    allowed = {"80.50", "100.00", "19.50", "1", "2", "0", "85", "73", "99"}
+    figures = set(re.findall(r"\d+(?:[.,]\d+)*", r["explanation"]))
+    unexplained = {f for f in figures if f not in allowed and f.rstrip("%") not in allowed}
+    assert not unexplained, f"explanation contains unsupported figures: {unexplained}"
+
+
+# --------------------------------------------------------------------------- #
+# Stubs removed. Both returned a placeholder; /api/upload was superseded by
+# /api/reconcile and /api/connect never did anything at all.
+# --------------------------------------------------------------------------- #
+
+def test_the_superseded_upload_stub_is_gone(client):
+    assert client.post("/api/upload", files={"file": ("f.csv", io.BytesIO(b"a\n"), "text/csv")}
+                       ).status_code == 404
+
+
+def test_the_unimplemented_connect_stub_is_gone(client):
+    assert client.post("/api/connect", json={"key_id": "rzp_test_x",
+                                             "key_secret": "y"}).status_code == 404

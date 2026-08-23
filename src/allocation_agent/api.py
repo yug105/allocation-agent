@@ -29,7 +29,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from allocation_agent.decide.gate import GateConfig, Outcome, decide
-from allocation_agent.decide.narrate import Narrator, diagnose_residual
+from allocation_agent.decide.narrate import Narrator, diagnose_residual, diagnose_residual
 from allocation_agent.match.blocker import BlockingConfig, block
 from allocation_agent.adapters.csv_upload import (
     UploadError, parse_bank_csv, parse_ledger_csv,
@@ -151,7 +151,19 @@ def create_app() -> FastAPI:
     state = _State()
     state.load()
     audit = AuditLog(ARTIFACTS / "runs.db")
-    narrator = Narrator()  # templates by default; no key required, no cost
+    # Templates by default -- no key, no cost, no network on any path. A key in
+    # the environment switches on the model backend, which was previously
+    # impossible: `openrouter.py` read OPENROUTER_API_KEY and nothing ever
+    # constructed it, so the README's "add a key for narration" did nothing.
+    backend = None
+    if os.environ.get("OPENROUTER_API_KEY"):
+        try:
+            from allocation_agent.decide.openrouter import OpenRouterBackend
+            backend = OpenRouterBackend()
+        except Exception:  # noqa: BLE001 -- never let narration break matching
+            backend = None
+    narrator = Narrator(backend=backend)
+    app.state.narrator_calls = lambda: narrator.narrated
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
@@ -191,7 +203,7 @@ def create_app() -> FastAPI:
             # Same function the upload path calls. One matching path, so the
             # measured demo numbers say something about uploaded files too.
             r = _match_one(state, rec, state.index, state.key_stats, gate,
-                           req.mult_threshold)
+                           req.mult_threshold, narrator)
             audit.record(rec.record_id, r["decision"], keys=r["keys"],
                          n_candidates=r["n_candidates"], path=r["path"],
                          evidence=r["evidence"])
@@ -202,7 +214,9 @@ def create_app() -> FastAPI:
             else:
                 exceptions.append({**_exception(rec, r["outcome"], r["explanation"],
                                                 r["n_candidates"]),
-                                   "stage": r["stage"]})
+                                   "stage": r["stage"],
+                                   "residual": round(r["residual_minor"] / 100, 2),
+                                   "residual_cause": r["residual_cause"]})
 
         audit.commit(); audit.finish_run(run_id)
         elapsed = time.perf_counter() - started
@@ -417,7 +431,7 @@ def create_app() -> FastAPI:
         started = time.perf_counter()
 
         for rec in records:
-            r = _match_one(state, rec, index, key_stats, gate, 0.5)
+            r = _match_one(state, rec, index, key_stats, gate, 0.5, narrator)
             audit.record(rec.record_id, r["decision"], keys=r["keys"],
                          n_candidates=r["n_candidates"], path=r["path"],
                          evidence=r["evidence"])
@@ -430,6 +444,8 @@ def create_app() -> FastAPI:
                 "matched_key": r["keys"][0] if r["keys"] else None,
                 "confidence": r["confidence"],
                 "n_candidates": r["n_candidates"],
+                "residual": round(r["residual_minor"] / 100, 2),
+                "residual_cause": r["residual_cause"],
                 "explanation": r["explanation"],
             })
 
@@ -447,31 +463,6 @@ def create_app() -> FastAPI:
             "results": results,
         }
 
-    @app.post("/api/upload")
-    async def upload(file: UploadFile = File(...)) -> dict:
-        if not (file.filename or "").lower().endswith(".csv"):
-            raise HTTPException(400, "only .csv files are accepted")
-        raw = await file.read()
-        if len(raw) > MAX_UPLOAD_BYTES:
-            raise HTTPException(400, f"file exceeds {MAX_UPLOAD_BYTES // 1024 // 1024} MB")
-        header = raw.split(b"\n", 1)[0].decode("utf-8", "replace").lower()
-        present = {c.strip().strip('"') for c in header.split(",")}
-        missing = REQUIRED_COLUMNS - present
-        if missing:
-            raise HTTPException(400, f"missing required column(s): {sorted(missing)}")
-        return {"accepted": True, "bytes": len(raw),
-                "note": "parsed and validated; reconciliation of uploaded files is not wired yet"}
-
-    @app.post("/api/connect")
-    def connect(req: ConnectRequest) -> dict:
-        if not req.key_id.startswith("rzp_test_"):
-            raise HTTPException(
-                400,
-                "only Razorpay test-mode keys are accepted (rzp_test_...). "
-                "This service will not accept a live key.",
-            )
-        raise HTTPException(501, "live Razorpay ingestion is not implemented yet")
-
     return app
 
 
@@ -483,7 +474,7 @@ def _sum_sentence(state: _State, st: dict, chosen: list[str]) -> str:
 
 
 def _match_one(state: _State, rec: BankRecord, index, key_stats, gate,
-               mult_threshold: float) -> dict:
+               mult_threshold: float, narrator: Narrator | None = None) -> dict:
     """Run one record through the whole matching path.
 
     Extracted so an uploaded file goes through *identical* code to the demo. A
@@ -494,7 +485,7 @@ def _match_one(state: _State, rec: BankRecord, index, key_stats, gate,
 
     if not cands:
         d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
-        return {"stage": "narrowing", "outcome": "no_candidate", "decision": d,
+        return {"residual_cause": None, "residual_minor": 0, "stage": "narrowing", "outcome": "no_candidate", "decision": d,
                 "keys": [], "n_candidates": 0, "path": "blocked", "evidence": None,
                 "confidence": None,
                 "explanation": "Nothing in the ledger is close enough to consider — "
@@ -503,7 +494,7 @@ def _match_one(state: _State, rec: BankRecord, index, key_stats, gate,
     usable = [k for k in cands if k in key_stats]
     if not usable:
         d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
-        return {"stage": "narrowing", "outcome": "no_candidate", "decision": d,
+        return {"residual_cause": None, "residual_minor": 0, "stage": "narrowing", "outcome": "no_candidate", "decision": d,
                 "keys": [], "n_candidates": 0, "path": "blocked", "evidence": None,
                 "confidence": None,
                 "explanation": "Nothing in the ledger is close enough to consider."}
@@ -522,7 +513,7 @@ def _match_one(state: _State, rec: BankRecord, index, key_stats, gate,
     p_mult = _p_multiple_with(state, rec, usable, key_stats)
     if p_mult >= mult_threshold and not lone_exact:
         d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
-        return {"stage": "grouping", "outcome": "suspected_grouped", "decision": d,
+        return {"residual_cause": None, "residual_minor": 0, "stage": "grouping", "outcome": "suspected_grouped", "decision": d,
                 "keys": [], "n_candidates": len(cands), "path": "multiplicity",
                 "evidence": {"p_multiple": round(p_mult, 4)}, "confidence": None,
                 "explanation": f"This looks like one payment covering several ledger "
@@ -580,7 +571,33 @@ def _match_one(state: _State, rec: BankRecord, index, key_stats, gate,
                 f"{d.threshold_required:.0%} this amount requires. Sent for review "
                 f"rather than posted.")
 
-    return {"stage": "ranking", "outcome": "posted" if d.outcome is Outcome.POST else "queued",
+    # A queued record with an amount gap has something to diagnose: the reviewer
+    # needs to know *why* the figures differ, not only that they do. Causes are
+    # ranked by arithmetic fit; the narrator turns the winner into a sentence
+    # and refuses to emit any figure the record does not carry.
+    residual_cause = None
+    residual_minor = 0
+    if narrator is not None and d.outcome is not Outcome.POST and confidence is not None:
+        stats = key_stats[chosen]
+        # The gap against the nearest single line, which is what a reviewer
+        # compares. `amounts` is a frozenset -- indexing it is meaningless.
+        nearest = min(stats.amounts, key=lambda a: abs(rec.amount_minor - a),
+                      default=0)
+        residual_minor = rec.amount_minor - nearest
+        if residual_minor:
+            causes = diagnose_residual(
+                residual_minor=residual_minor, amount_minor=rec.amount_minor,
+                n_lines=stats.n_rows, usual_fee_bps=0)
+            (told,) = narrator.narrate([{
+                "record_id": rec.record_id, "causes": causes,
+                "residual_minor": residual_minor, "amount_minor": rec.amount_minor,
+                "n_lines": stats.n_rows}])
+            residual_cause = told["cause"]
+            expl = f"{expl} {told['sentence']}"
+
+    return {"stage": "ranking",
+            "residual_cause": residual_cause,
+            "residual_minor": residual_minor, "outcome": "posted" if d.outcome is Outcome.POST else "queued",
             "decision": d, "keys": [chosen], "n_candidates": len(usable), "path": path,
             "evidence": evidence, "confidence": confidence, "explanation": expl}
 

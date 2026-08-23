@@ -8,6 +8,7 @@ import sys, time
 import numpy as np, pandas as pd
 
 from allocation_agent.adapters.benchrec import load_benchrec
+from allocation_agent.eval.leakage import assert_no_leakage
 from allocation_agent.eval.splits import temporal_split
 from allocation_agent.match.blocker import BlockingConfig, block
 from allocation_agent.match.features import build_key_stats, featurise, FEATURE_NAMES
@@ -98,6 +99,16 @@ def main():
     Xte, yte, gte, _ = build_pairs(ds, idx, kstats, sp.test)
     print(f"pairs  train {len(Xtr):,}  val {len(Xva):,}  test {len(Xte):,}   "
           f"({time.perf_counter()-t:.1f}s)")
+
+    # The leakage gate runs on every training run, not once during development.
+    # It previously existed only as a module with its own tests, which made
+    # "we checked for leakage" a claim about the past rather than a property of
+    # the artefact being produced. Raises rather than warns: a model trained on
+    # a leaked feature should not reach disk.
+    assert_no_leakage(pd.DataFrame(Xtr, columns=list(FEATURE_NAMES)),
+                      pd.Series(ytr), check_derived=True)
+    print(f"leakage gate: {len(FEATURE_NAMES)} features clean "
+          f"(no outcome columns, no label renamed, max NMI < 0.95)\n")
     print(f"scoreable records  train {len(gtr):,}  test {len(gte):,}\n")
 
     results = {}

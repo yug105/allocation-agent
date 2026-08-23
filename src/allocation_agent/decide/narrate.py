@@ -124,6 +124,10 @@ class Narrator:
     batch_size: int = 20
     _cache: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
     calls: int = 0
+    narrated: int = 0
+    """Times narrate() was invoked at all -- the LLM counter stays at zero on the
+    template path, which is exactly what made 'constructed but never called'
+    invisible."""
 
     def _situation(self, item: dict[str, Any]) -> str:
         """Cache key. Identical situations are narrated once."""
@@ -131,6 +135,7 @@ class Narrator:
         return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
     def narrate(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        self.narrated += 1
         if not items:
             return []
 

@@ -71,7 +71,7 @@ flowchart TB
         D3["Narrator<br/><i>LLM</i>"]
     end
 
-    subgraph L5["5 · LEARNING"]
+    subgraph L5["5 · LEARNING — offline script, not a live layer"]
         E0{"<b>what broke?</b><br/>route by failure_locus"}
         E1["case<br/><i>→ explanation</i>"]
         E2["training data<br/><i>→ accuracy</i>"]
@@ -114,9 +114,9 @@ flowchart TB
 | 3.5 | Group solver | rules | Find the *smallest* subset summing to target, and prove it unique | Break a tie |
 | 4.1 | Confidence gate | rules | Post / queue, threshold scaled by amount | Override on model confidence alone |
 | 4.2 | Residual diagnoser | rules | Compute what each cause predicts, rank by fit | Guess |
-| 4.3 | Narrator | **LLM** | Write the explanation | Introduce a number |
+| 4.3 | Narrator | **LLM** | Diagnose the residual and write the explanation | Introduce a number |
 | 5.1 | Exception router | rules | Record **which component failed**; route the correction to the right fix | Send everything to one store |
-| 5.2 | Case base | store | Precedent a reviewer can read — *explanation* | Auto-commit on precedent alone |
+| 5.2 | Case base | store | Precedent a reviewer can read — *explanation* | Auto-commit on precedent alone<br/>**Built and tested; not wired to any path.** |
 | 5.3 | Training queue | rules | Labelled corrections → scorer refits — *accuracy* | Update mid-run |
 | 5.4 | Rule proposer | rules | Systematic pattern → config change — *permanence* | Apply without approval |
 | 6.x | Reporting | rules | Workbook, audit, archive | Drop a record |

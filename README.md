@@ -142,6 +142,10 @@ Stated plainly, because the alternative is being asked about them.
 
 **The free LLM's prose is worse than the templates it replaces.** The architecture is sound; the output is not yet an improvement. Templates are the default and the model is the optional upgrade — the reverse of what the design assumed.
 
+**The learning loop is an offline experiment, not a live feature.** `scripts/run_learning.py` produces the −71% result above with all its controls, and it is real. But no API path touches it: a reviewer correcting a decision in the deployed demo does not retrain anything. The architecture diagram draws learning as a layer of the running system; today it is a script.
+
+**The case base is built and tested but wired to nothing.** Twelve tests cover retrieval, near-duplicate collapse, size capping and retirement. Nothing calls it — not even the learning experiment that produced the number above. It is retained rather than deleted because the design for it was requested deliberately, but it is not part of any measured result.
+
 ---
 
 ## Live demo

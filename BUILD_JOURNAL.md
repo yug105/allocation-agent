@@ -1196,3 +1196,87 @@ on the wrong row. Every variant now states its cap explicitly.
 Regenerating that table immediately caught a stale figure I had hand-carried
 into README.md and DESIGN.md: ties refused was 9.3%, not 10.7%. A number typed
 by hand is a number nobody checked.
+
+---
+
+## Auditing what is real: six of twenty-one modules were decoration
+
+The review covered two commits. The instruction that followed was harder: *only
+keep things that are 100% correct and working, and do not assume anything.* So
+I traced every endpoint and every module rather than reasoning about them.
+
+**Endpoints, by whether they do work:**
+
+```
+REAL       GET  /            GET /api/health   GET /api/meta
+REAL       POST /api/run     POST /api/settlements   POST /api/reconcile
+STUB/DEAD  POST /api/upload    -> {"note": "reconciliation ... is not wired yet"}
+STUB/DEAD  POST /api/connect   -> 501 not implemented
+```
+
+**Modules, by whether any live path reaches them.** A static import graph gave
+one false positive worth recording: `match.ranker` appeared unreachable because
+`api.py` never imports it — the class arrives through `pickle`, which needs it
+importable at runtime. Checking the pickle's contents rather than the imports
+corrected that. The genuinely unreachable ones were `decide.openrouter`,
+`eval.leakage` and `learn.casebase` — each referenced **only by its own test**.
+
+### The worst of it: the narrator was never called
+
+`narrator` appears exactly once in `api.py`: on the line that constructs it.
+Every explanation on the page was an f-string written inline. So the component's
+whole point — *it cannot emit a figure that is not in the payload, and there is
+a test that feeds it a lying backend to prove it* — protected nothing anybody
+read. The README describes narration as an LLM component of the system. It was
+a component of the test suite.
+
+Worse, `openrouter.py` reads `OPENROUTER_API_KEY` and **nothing ever constructed
+it**, so README line 217 — "optional: add an OpenRouter key for narration" — was
+false in effect. Setting the key did nothing at all.
+
+Now wired where it belongs. The narrator's real job is residual diagnosis:
+naming *why* two amounts differ. It runs on a queued record with a genuine gap,
+which is where a reviewer needs the reason rather than "below threshold":
+
+```
+b179218  5,635.03
+  Best guess is USD_2/26/16_3445812260_195 AAB, but at 58% it is under the
+  89% this amount requires. Sent for review rather than posted.
+  Gap of -636.83 equals one outstanding line; the payment appears partial.
+```
+
+14 invocations across 500 records — the 36 queued records include 22 with no
+gap to explain, and inventing a cause for those would be the same defect in a
+new place. A key in the environment now switches the model backend on for real.
+
+### A test that was not running
+
+Fixing this surfaced a second kind of invisible failure: `test_the_narrator_
+is_actually_invoked` was defined **twice** in `test_api.py`. Python keeps the
+last definition, so the shadowed copy — the one asserting the real behaviour —
+never ran and never failed. `tests/test_suite_integrity.py` now walks the AST of
+every test file and fails on a duplicate name, and on any test whose body
+contains no assertion at all.
+
+That second check found four tests with no `assert`. All four were fine —
+they call `assert_no_leakage` and `validate_numbers`, functions whose contract
+*is* to raise, so the bare call is an assertion with a different spelling. The
+check now recognises that rather than forcing four correct tests to be rewritten
+to satisfy it.
+
+### The leakage gate now runs
+
+`eval.leakage` caught four outcome columns during development and was then never
+run again — "we checked for leakage" was a claim about the past rather than a
+property of the artefact. It is now a gate inside `train_ranker.py`, raising
+rather than warning, so a model trained on a leaked feature cannot reach disk.
+
+### Two things kept and labelled rather than deleted
+
+The **learning loop** is a real measured experiment and no API path touches it:
+correcting a decision in the deployed demo retrains nothing. The **case base**
+is correct, has twelve tests, and is called by nothing — not even the learning
+experiment. Deleting it was the obvious reading of "no decoration", and I did
+delete it, then put it back: the design for it was requested deliberately, and
+quietly removing requested work is not my call to make. Both are now labelled as
+what they are, in the README and in the architecture diagram.
