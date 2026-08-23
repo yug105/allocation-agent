@@ -136,6 +136,10 @@ Stated plainly, because the alternative is being asked about them.
 
 **Throughput is 1.26× the published commercial figure, not more** — and that is on a laptop. On the free-tier host the live demo runs at ~45 rec/sec, roughly 11× slower, because the instance is a fraction of a CPU. Blocking alone does 6,720/sec; the pipeline is still a per-record Python loop. A throughput number without the machine attached is not a number.
 
+**The grouped-settlement numbers come from synthetic data.** BenchRec has no subset-sum structure — measured, not assumed: 0 of 4,000 grouped records form a closed batch, because `matchId` is a batch identifier rather than an accounting unit. So the solver is evaluated on [ReconRiver](https://huggingface.co/datasets/heybadrinath/reconriver-synthetic-reconciliation), which does have it. Synthetic amounts are drawn independently, which likely makes coincidental subsets *rarer* than in production — so 96.6% precision should be read as an upper bound, not a forecast.
+
+**[APEX-Accounting](https://huggingface.co/datasets/sadcasticme/apex-accounting) was not used.** It is 10 developer tasks scored by rubric, not a labelled reconciliation set — a good benchmark for a coding agent and the wrong shape for measuring match precision against ground truth. Named here because it is the obvious dataset to ask about.
+
 **The free LLM's prose is worse than the templates it replaces.** The architecture is sound; the output is not yet an improvement. Templates are the default and the model is the optional upgrade — the reverse of what the design assumed.
 
 ---
