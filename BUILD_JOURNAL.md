@@ -745,3 +745,41 @@ the narrowness was invisible until reality picked the case I had not covered.
 I could not verify the container locally: Docker CLI was installed but the daemon
 was not running, so `docker build` failed and I pushed unverified. The build-time
 import check is the compensating control for not being able to run the image.
+
+---
+
+## Live, and two things the deployment taught me
+
+### The 50%-confidence cluster is the calibration working
+
+The exception list showed a run of records all scoring *exactly* 50%. Exactly
+one half is suspicious -- it means the margin between the top two candidates was
+precisely zero.
+
+It was. Twelve of the first 500 records, and in every one the top two allocation
+keys had **identical amounts, in the same account, inside the same date window**:
+
+```
+b179260   5,402.59   160 candidates
+   top-2 key amounts: [[5402.59], [5402.59]]
+```
+
+No feature the model has can separate those. It scores them identically, the
+margin is zero, confidence is 0.5, and the gate queues them.
+
+**That is correct behaviour, not a defect.** A system that broke the tie
+arbitrarily would post one with false confidence and be wrong half the time on
+this population. Saying "I cannot tell these apart" is the right answer, and it
+falls out of deriving confidence from the margin rather than from a raw score.
+
+### Throughput on free-tier hosting is 11x slower, and the README was wrong
+
+Local: **495 records/sec**. Deployed on a free instance: **45/sec**.
+
+Render's free tier is a fraction of a CPU. Nothing about the code changed. But
+"524 rec/sec against a published commercial figure of 417" was written from a
+laptop measurement and presented without qualification, and anyone opening the
+live demo sees a number an order of magnitude lower.
+
+Both figures are now stated, with the hardware attached to each. A throughput
+claim without the machine it was measured on is not a claim.

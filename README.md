@@ -44,7 +44,7 @@ Held-out temporal split, test frozen, models trained on earlier records only.
 | straight-through rate | 79.3% |
 | **precision of auto-posted matches** | **99.2%** (29,426 / 29,649) |
 | grouped records routed to review | 87.3% |
-| throughput | 524 rec/sec |
+| throughput | 524 rec/sec on a laptop (8-core M-series); **~45/sec on free-tier hosting**, which is a fraction of a CPU |
 | **LLM calls on the matching path** | **0** |
 | records unaccounted for | **0** |
 
@@ -93,6 +93,12 @@ PR-AUC 87.2% against a 10.2% positive rate. Beats the obvious rule (no exact-amo
 
 **The model ranks. The engine decides. The person commits.**
 
+**And it declines to guess.** Where two ledger keys carry identical amounts in
+the same account and window, no feature can separate them: the model scores them
+equally, the margin is zero, confidence is exactly 50%, and the record goes to a
+human. Breaking that tie arbitrarily would post a wrong match with false
+confidence on half of them.
+
 Two constraints hold that in place:
 
 - **The narrator may not introduce a number.** Every figure in generated text must appear in the input payload, checked after generation. There is a test that feeds it a lying backend and asserts the invented figure never reaches output.
@@ -128,7 +134,7 @@ Stated plainly, because the alternative is being asked about them.
 
 **Straight-through is below vendor claims.** HighRadius publishes 95–98% auto-match; this posts 79.3%. Some of the gap is definitional — routing a grouped record to a human counts against us and may not count against them — but the comparison is written the way that does not assume our favour.
 
-**Throughput is 1.26× the published commercial figure, not more.** Blocking alone runs at 6,720 rec/sec; the pipeline is still a per-record Python loop.
+**Throughput is 1.26× the published commercial figure, not more** — and that is on a laptop. On the free-tier host the live demo runs at ~45 rec/sec, roughly 11× slower, because the instance is a fraction of a CPU. Blocking alone does 6,720/sec; the pipeline is still a per-record Python loop. A throughput number without the machine attached is not a number.
 
 **The free LLM's prose is worse than the templates it replaces.** The architecture is sound; the output is not yet an improvement. Templates are the default and the model is the optional upgrade — the reverse of what the design assumed.
 
@@ -136,8 +142,10 @@ Stated plainly, because the alternative is being asked about them.
 
 ## Live demo
 
-Deployed on Render (free tier, so the first request after a period of inactivity
-takes ~50 seconds to wake the container; subsequent requests are immediate).
+Deployed on Render's free tier. The first request after a period of inactivity
+takes ~50 seconds to wake the container; subsequent ones are immediate. The
+instance is a fraction of a CPU, so throughput there is ~45 rec/sec against 495
+on a laptop — same code, different hardware.
 
 The demo runs on **held-out records the models never saw during training**, so
 the precision it reports is measured against ground truth rather than asserted.
