@@ -134,17 +134,28 @@ Stated plainly, because the alternative is being asked about them.
 
 ---
 
+## Live demo
+
+Deployed on Render (free tier, so the first request after a period of inactivity
+takes ~50 seconds to wake the container; subsequent requests are immediate).
+
+The demo runs on **held-out records the models never saw during training**, so
+the precision it reports is measured against ground truth rather than asserted.
+
 ## Running it
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-uv run pytest                              # 199 tests
+uv run pytest                              # 240 tests
 
 uv run python scripts/measure_blocking.py  # recall/size tradeoff
 uv run python scripts/train_ranker.py      # top-1 vs baselines
 uv run python scripts/train_multiplicity.py
 uv run python scripts/run_batch.py         # end-to-end + audit trail
 uv run python scripts/run_learning.py      # learning loop + all controls
+uv run python scripts/eval_solver.py       # group solver on ReconRiver
+
+uv run uvicorn allocation_agent.api:create_app --factory --reload   # the service
 ```
 
 Everything runs on CPU. No GPU, no external services required — the LLM layer is optional and falls back to templates without a key.

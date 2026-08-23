@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: allocation-agent
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: ARTIFACTS_DIR
+        value: /app/artifacts
+      - key: PORT
+        value: 10000
