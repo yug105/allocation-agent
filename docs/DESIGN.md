@@ -62,7 +62,7 @@ flowchart TB
         C2["Blocker<br/><i>rules</i>"]
         C3["Ranker<br/><i>GBDT</i>"]
         C4["Multiplicity detector<br/><i>GBDT</i>"]
-        C5["Group solver<br/><i>DP subset-sum</i>"]
+        C5["Group solver<br/><i>smallest subset, ties refused</i>"]
     end
 
     subgraph L4["4 · DECISION"]
@@ -111,7 +111,7 @@ flowchart TB
 | 3.2 | Blocker | rules | Cut candidate space ~3400× | Score or rank |
 | 3.3 | Ranker | **GBDT** | Score candidates, calibrated probability | Commit a match |
 | 3.4 | Multiplicity detector | **GBDT** | Binary: one key or several | Decide which keys |
-| 3.5 | Group solver | rules | Find subset summing to target | Approximate |
+| 3.5 | Group solver | rules | Find the *smallest* subset summing to target, and prove it unique | Break a tie |
 | 4.1 | Confidence gate | rules | Post / queue, threshold scaled by amount | Override on model confidence alone |
 | 4.2 | Residual diagnoser | rules | Compute what each cause predicts, rank by fit | Guess |
 | 4.3 | Narrator | **LLM** | Write the explanation | Introduce a number |
@@ -173,7 +173,7 @@ sequenceDiagram
                 MD-->>GT: top key + confidence
             else spans several
                 MD->>GS: solve subset
-                GS-->>GT: key set, or infeasible
+                GS-->>GT: unique smallest key set, or infeasible/ambiguous
             end
         end
     end
@@ -724,27 +724,81 @@ Report **PR-AUC**, and precision at a fixed alert budget. Not ROC-AUC — 10.8% 
 
 ### B4.5 Group solver
 
+> **Revised after measurement.** The design below is what shipped. What was
+> originally specified here — a single reachability DP, with ties broken by
+> total ranker score — was built, measured, and replaced. It recovered 38.0% of
+> settlements and **59.3% of the answers it gave balanced without being the
+> recorded batch**. Both changes are recorded in the build journal.
+
 ```
-Problem: find S ⊆ candidates with |sum(S) − target| ≤ ε
+Problem: find the SMALLEST S ⊆ candidates with |sum(S) − target| ≤ ε,
+         and confirm no other S' of the same size reaches the same sum.
 Money is integers → pseudo-polynomial DP is genuinely polynomial here.
 
-dp[i][s] = reachable using first i candidates, sum s
-time  O(n · target/gcd)
-space O(target/gcd)   -- rolling row + parent pointers for reconstruction
+layers[k][s] = sum s reachable using exactly k candidates
+time  O(n · k · target/64)     bitset rows, one shift-or per (candidate, k)
+space O(k · target/64)
 ```
 
+Finding *a* balancing subset is the easy half and close to useless on its own.
+With ~100 candidates and a 3-element answer, many subsets hit any given total.
+Two priors close most of the gap, both from how settlement works rather than
+from tuning against the answer:
+
+**Fewest components wins.** Batches are small; pools are not. Each extra
+component multiplies the coincidental subsets available. This must be a *search
+over cardinality*, not a filter applied after — hence reachability split by
+subset size, answer read from the lowest non-empty layer.
+
+**A tie is not an answer.** Any rival subset of the same size must omit at least
+one member of the one found, so dropping each member in turn and re-solving is a
+**complete** uniqueness test rather than a sample. Costs k extra passes, k
+typically 2.
+
 ```python
-def solve_subset(cands: list[int], target: int, eps: int,
-                 max_n: int = 40, timeout_ms: int = 200) -> list[int] | None:
-    if len(cands) > max_n:
-        cands = top_by_ranker_score(cands, max_n)
+def solve_subset(*, target_minor: int, candidates_minor: list[int],
+                 config: SolverConfig | None = None) -> SolverResult:
     ...
+
+@dataclass(frozen=True, slots=True)
+class SolverConfig:
+    tolerance_minor: int = 0
+    max_candidates: int = 64        # pool cap; refused, never truncated to fit
+    max_target_minor: int = 5_000_000_000
+    max_subset_size: int = 8        # latency guard, NOT an accuracy lever
+    require_unique: bool = True     # refuse ties instead of ranking them
 ```
 
 **Guards**
-- cap `n` at 40 (p99 of real instances is 72 — log and skip beyond)
-- hard timeout → exception, never a partial guess
-- if multiple subsets valid → return highest total ranker score, flag ambiguity
+- pool over `max_candidates` → `TOO_LARGE`, refused rather than truncated
+- subset larger than `max_subset_size` → not returned; a six-payment coincidence
+  is weak evidence, not a match
+- multiple subsets valid at the smallest size → `AMBIGUOUS`, **nothing claimed**
+
+`max_subset_size` was expected to be an accuracy lever and is not: 8 and 64 give
+identical results, because min-cardinality search finds the real batch (median
+size 2) long before the cap binds. Documented as a latency guard rather than
+claimed as part of the gain.
+
+**Measured on ReconRiver** (150 settlements, pool median 97, batch ids hidden):
+
+| variant | coverage | precision | balanced-but-wrong | ties refused |
+|---|---|---|---|---|
+| reachability DP, first subset | 38.0% | 39.0% | 59.3% | — |
+| smallest subset | 83.3% | 93.3% | 6.0% | — |
+| smallest, refuse ties (shipped) | **75.3%** | **96.6%** | **2.7%** | 11.3% |
+
+The shipped row is deliberately not the best coverage. It gives up 8pp to halve
+wrong answers; refused credits go to a reviewer, wrong ones balance the books
+against the wrong invoices.
+
+**Report coverage and precision separately, never one number.** The aggregate
+hid the defect completely — and split further by true batch size, it hides a
+second one: on genuine multi-payment batches the solver recovers 106 of 120 with
+**zero wrong sets**, while every wrong answer in the run is a single-payment
+credit that should have been routed to the matcher instead. For 21 of those 30
+the true payment was never in the candidate pool, which is a blocking limit and
+is counted separately as `unreachable`.
 
 ## B5. Decision layer
 
@@ -1027,9 +1081,10 @@ gate:
   cap: 0.995
 
 solver:
-  max_candidates: 40
-  timeout_ms: 200
-  epsilon_minor: 100
+  max_candidates: 64
+  max_subset_size: 8
+  require_unique: true      # refuse ties rather than ranking them
+  tolerance_minor: 0
 
 learning:
   enabled: true
@@ -1137,7 +1192,7 @@ Run each, record the behaviour in `BUILD_JOURNAL.md`:
 | Column order changed | schema mapper handles it; cache miss, remaps |
 | Prompt injection in a narration field | inert — it is data, never reaches an instruction channel |
 | Pattern store corrupted | degrades to no-memory, logs, continues |
-| Solver timeout | exception, never a partial guess |
+| Solver tie or timeout | refused, never a partial guess |
 
 ## C6. Baselines
 
@@ -1158,7 +1213,7 @@ Things I picked a default for. Change any of these.
 | D2 | Blocking strategy | account + date bucket + amount band | LSH · sorted-neighbourhood · learned blocking |
 | D3 | Threshold curve | log in amount | step function · learned from cost matrix · **conformal prediction sets** |
 | D4 | Situation hash fields | payer + reason + residual bucket + missing + candidate count | tighter, looser, or learned |
-| D5 | Group solver cap | 40 candidates, 200ms | higher cap · ILP fallback · give up earlier |
+| D5 | Group solver bounds | 64 candidates, subsets ≤ 8, ties refused | higher cap · rank ties on a second signal · ILP fallback |
 | D6 | Multiplicity model | separate classifier | joint model with ranker · threshold on score margin only |
 | D7 | Storage | DuckDB | SQLite · Postgres · Parquet + Polars |
 | D8 | Dashboard | Streamlit (time) | Next.js (better demo) |
