@@ -434,8 +434,10 @@ def create_app() -> FastAPI:
             return raw.decode("utf-8", "replace")
 
         try:
-            records = parse_bank_csv(await read(bank, "bank"))
-            rows = parse_ledger_csv(await read(ledger, "ledger"))
+            records, bank_layout = parse_bank_csv(await read(bank, "bank"),
+                                                  report_layout=True)
+            rows, ledger_layout = parse_ledger_csv(await read(ledger, "ledger"),
+                                                   report_layout=True)
         except UploadError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -481,6 +483,10 @@ def create_app() -> FastAPI:
             "summary": summary,
             "seconds": round(time.perf_counter() - started, 3),
             "llm_calls_on_matching_path": 0,
+            # 03/01/2026 is the third of January or the first of March. One
+            # reading is chosen for the whole file; saying which is the only way
+            # the person who wrote it can catch a wrong guess.
+            "date_layout": {"bank": bank_layout, "ledger": ledger_layout},
             "caveat": "Your file has no ground truth, so no precision is reported — "
                       "any accuracy number here would be invented. Check the matches "
                       "against what you already know about this data.",

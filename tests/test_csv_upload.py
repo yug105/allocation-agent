@@ -134,3 +134,88 @@ def test_the_two_sides_line_up_on_the_same_day_scale():
     recs = parse_bank_csv(BANK)
     rows = parse_ledger_csv(LEDGER)
     assert recs[0].day == rows[0].day
+
+
+# --------------------------------------------------------------------------- #
+# What Excel actually exports.
+#
+# A European Excel writes `a;b;c` with a comma for the decimal point. That file
+# was refused with "could not find a column for: account", because the whole
+# row parsed as one column. Supporting it means supporting the decimal comma in
+# the same breath: read `1250,00` with a comma-stripping parser and you get
+# 125,000.00 -- a hundredfold error, silent, in money.
+# --------------------------------------------------------------------------- #
+
+def test_a_semicolon_file_is_read_rather_than_refused():
+    recs = parse_bank_csv("id;account;amount;date\nB1;ACC;1250,00;2026-03-01\n")
+    assert len(recs) == 1
+    assert recs[0].account == "ACC"
+
+
+def test_the_decimal_comma_travels_with_the_semicolon():
+    """1250,00 is one thousand two hundred and fifty, not a hundred and
+    twenty-five thousand."""
+    recs = parse_bank_csv("id;account;amount;date\nB1;ACC;1250,00;2026-03-01\n")
+    assert recs[0].amount_minor == 125_000
+
+
+def test_a_comma_file_still_reads_commas_as_thousands():
+    recs = parse_bank_csv('id,account,amount,date\nB1,ACC,"1,250.00",2026-03-01\n')
+    assert recs[0].amount_minor == 125_000
+
+
+def test_a_tab_separated_export_is_read():
+    recs = parse_bank_csv("id\taccount\tamount\tdate\nB1\tACC\t1250.00\t2026-03-01\n")
+    assert recs[0].amount_minor == 125_000
+
+
+def test_a_semicolon_file_still_refuses_excess_precision():
+    with pytest.raises(UploadError, match="precision"):
+        parse_bank_csv("id;account;amount;date\nB1;ACC;1,005;2026-03-01\n")
+
+
+# --------------------------------------------------------------------------- #
+# 03/01/2026 is the third of January or the first of March depending on which
+# side of the Atlantic wrote it. One is picked for the whole file; a caller who
+# is never told which has no way to notice the wrong one.
+# --------------------------------------------------------------------------- #
+
+def test_the_chosen_date_layout_is_reported():
+    recs, layout = parse_bank_csv("id,account,amount,date\nB1,A,1.00,03/01/2026\n",
+                                  report_layout=True)
+    assert layout in {"DD/MM/YYYY", "MM/DD/YYYY"}
+    assert recs[0].day is not None
+
+
+def test_an_unambiguous_file_reports_the_layout_it_used():
+    _, layout = parse_bank_csv("id,account,amount,date\nB1,A,1.00,2026-03-01\n",
+                               report_layout=True)
+    assert layout == "YYYY-MM-DD"
+
+
+# --------------------------------------------------------------------------- #
+# The message a person has to act on.
+# --------------------------------------------------------------------------- #
+
+def test_a_non_numeric_amount_is_named_not_called_blank():
+    """'N/A' reported "the amount is blank", sending someone to look for an
+    empty cell that is not empty."""
+    with pytest.raises(UploadError, match="N/A"):
+        parse_bank_csv("id,account,amount,date\nB1,A,N/A,2026-03-01\n")
+
+
+def test_a_genuinely_blank_amount_still_says_blank():
+    with pytest.raises(UploadError, match="blank"):
+        parse_bank_csv("id,account,amount,date\nB1,A,,2026-03-01\n")
+
+
+def test_an_entirely_empty_file_is_refused_not_crashed():
+    """Sniffing the delimiter reads the first row; on an empty file there is
+    none, and `next()` without a default raised StopIteration as a 500."""
+    with pytest.raises(UploadError, match="header"):
+        parse_bank_csv("")
+
+
+def test_a_file_of_only_newlines_is_refused():
+    with pytest.raises(UploadError):
+        parse_bank_csv("\n\n\n")

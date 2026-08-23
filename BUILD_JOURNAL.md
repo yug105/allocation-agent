@@ -1382,3 +1382,53 @@ no sum can state:
 
 `_sum_sentence` had no callers left and was deleted rather than kept for later.
 A test now asserts no explanation restates its own arithmetic.
+
+---
+
+## Thirty-one files a real person might upload
+
+The upload tab had been tested with files I wrote to demonstrate it working.
+Testing it with files people actually have found four defects, three of them
+invisible because the response looked reasonable.
+
+**A European Excel export was refused outright.** Excel on a machine with a
+comma decimal separator writes `a;b;c`, not `a,b,c`. The whole row parsed as one
+column and the error read "could not find a column for: account" — technically
+true, uselessly so.
+
+Supporting it is not just a delimiter, and this is the part that matters: the
+same locale writes **`1250,00`** for one thousand two hundred and fifty. The
+existing parser strips commas as thousands separators, so that file would have
+been read as **125,000.00** — a hundredfold error, in money, with nothing
+visibly wrong anywhere. The decimal mark now travels with the delimiter:
+semicolon implies comma-decimal, which is the convention Excel itself follows.
+
+**`N/A` in the amount column reported "the amount is blank".** It is not blank;
+it is unreadable. The message sent someone hunting for an empty cell that does
+not exist. The cell's actual contents are now quoted back.
+
+**An ambiguous date was resolved silently.** `03/01/2026` is the third of
+January or the first of March depending on who wrote the file. One layout is
+chosen for the whole file — deliberately, since deciding per row mixes both
+inside one file — but nothing said which. A US bank export was being read
+day-first and could sit eleven months from where its author meant it. The chosen
+layout now comes back in the response and is shown on the page: *"Dates read as
+DD/MM/YYYY in the bank file."*
+
+**And I broke empty files while fixing the others.** Sniffing the delimiter
+reads the first row; on an empty file there is none, and `next()` without a
+default raised `StopIteration` — a 500 where there had been a clean 400. Caught
+only because I re-ran the whole battery after the fix rather than testing the
+three cases I had just changed.
+
+Things that already worked and are now pinned: UTF-8 BOM from Excel, CRLF line
+endings, tab separation, `$` and thousands separators, parenthesised negatives,
+quoted fields containing commas, ragged rows, headers in any case or with
+padding, files with no id column, 1,000 rows, and eight distinct ways of being
+malformed.
+
+The other two tabs took 30 requests — zero and negative limits, limits past the
+end of the dataset, every boundary of every threshold, wrong types, arrays where
+objects belong, missing multipart parts. No crashes, no 500s, and **every record
+accounted for in every run**: `posted + queued + grouped + none == n_records`
+held in all of them.

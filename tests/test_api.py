@@ -796,3 +796,13 @@ def test_a_wrong_group_keeps_the_sentence_that_matters(settled):
     for r in settled["results"]:
         if r["status"] == "solved" and not r["exact"]:
             assert "not the recorded batch" in r["explanation"]
+
+
+def test_the_date_layout_that_was_chosen_is_reported_back(client):
+    """03/01/2026 is read one way for the whole file. Saying which is the only
+    way the person who wrote it can catch a wrong guess."""
+    body = client.post("/api/reconcile", files=_pair(
+        "id,account,amount,date\nB1,A-1,80.50,03/01/2026\n",
+        "invoice,account,amount,date\nINV-1,A-1,80.50,2026-03-03\n")).json()
+    assert body["date_layout"]["bank"] in {"DD/MM/YYYY", "MM/DD/YYYY"}
+    assert body["date_layout"]["ledger"] == "YYYY-MM-DD"

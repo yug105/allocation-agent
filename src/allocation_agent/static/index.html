@@ -397,6 +397,9 @@ function renderUpload(d){
     <div class=c><div class="n r">${fmt(s.no_candidate)}</div><div class=l>nothing to match</div></div>
   </div>
   <p class=note>${esc(d.caveat)}</p>
+  <p class=faint>Dates read as <b>${esc(d.date_layout.bank)}</b> in the bank file and
+  <b>${esc(d.date_layout.ledger)}</b> in the ledger. A date like 03/01/2026 can be read
+  two ways; one is chosen for the whole file, so check this is the one you meant.</p>
   <div class=scroll><table>
   <tr><th>record</th><th class=num>amount</th><th>matched to</th><th class=num>confidence</th><th>what happened</th></tr>
   ${d.results.slice(0,200).map(r=>{

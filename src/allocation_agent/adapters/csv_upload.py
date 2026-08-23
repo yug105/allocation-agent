@@ -67,34 +67,73 @@ def sniff_columns(headers: list[str]) -> dict[str, str]:
     return found
 
 
-def _rows(text: str) -> tuple[list[dict[str, str]], list[str]]:
-    reader = csv.DictReader(io.StringIO(text))
+#: Delimiter -> the decimal mark that convention pairs with it. A European
+#: Excel writes `a;b;c` *and* `1250,00`; reading that file with a
+#: comma-stripping parser yields 125,000.00, a hundredfold error in money with
+#: nothing visibly wrong.
+_DELIMITERS = {",": ".", ";": ",", "\t": ".", "|": "."}
+
+
+def _sniff_delimiter(header: str) -> str:
+    """Whichever candidate splits the header into the most fields."""
+    best, best_n = ",", 0
+    for d in _DELIMITERS:
+        # An empty file yields no row at all; default rather than raise, so the
+        # caller reaches the readable "no header row" message below.
+        row = next(csv.reader(io.StringIO(header), delimiter=d), [])
+        if len(row) > best_n:
+            best, best_n = d, len(row)
+    return best
+
+
+def _rows(text: str) -> tuple[list[dict[str, str]], list[str], str]:
+    # Excel writes a UTF-8 BOM; it would otherwise become part of the first
+    # column's name and hide it from the sniffer.
+    text = text.lstrip("\ufeff")
+    first = text.split("\n", 1)[0]
+    delimiter = _sniff_delimiter(first)
+    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
     headers = [h for h in (reader.fieldnames or []) if h]
     if not headers:
         raise UploadError("the file has no header row")
     rows = [r for r in reader if any((v or "").strip() for v in r.values())]
     if not rows:
         raise UploadError("the file has no rows below the header")
-    return rows, headers
+    return rows, headers, _DELIMITERS[delimiter]
 
 
-def _minor(raw: str | None, row_no: int) -> int:
-    """Money, as an exact integer count of minor units."""
-    text = (raw or "").strip().replace(",", "").replace(" ", "")
-    text = re.sub(r"^[^\d\-+.]+|[^\d]*$", "", text) if text else text
-    if not text:
+def _minor(raw: str | None, row_no: int, decimal: str = ".") -> int:
+    """Money, as an exact integer count of minor units.
+
+    *decimal* is the mark this file uses for the fractional part -- a comma in
+    a European export. Reading `1250,00` with a comma-stripping parser yields
+    125,000.00: a hundredfold error, in money, with nothing visibly wrong.
+    """
+    original = (raw or "").strip()
+    if not original:
         raise UploadError(f"row {row_no}: the amount is blank")
 
-    neg = text.startswith("-") or (raw or "").strip().startswith("(")
+    text = original.replace(" ", "")
+    if decimal == ",":
+        text = text.replace(".", "").replace(",", ".")
+    else:
+        text = text.replace(",", "")
+    text = re.sub(r"^[^\d\-+.]+|[^\d]*$", "", text)
+    if not text:
+        # Present but unreadable. Calling it "blank" sends someone hunting
+        # for an empty cell that is not empty.
+        raise UploadError(f"row {row_no}: {original!r} is not an amount")
+
+    neg = text.startswith("-") or original.startswith("(")
     text = text.lstrip("-+")
 
     whole, _, frac = text.partition(".")
     whole = whole or "0"
     if not whole.isdigit() or (frac and not frac.isdigit()):
-        raise UploadError(f"row {row_no}: {raw!r} is not an amount")
+        raise UploadError(f"row {row_no}: {original!r} is not an amount")
     if len(frac) > 2:
         raise UploadError(
-            f"row {row_no}: {raw!r} has more precision than minor units allow. "
+            f"row {row_no}: {original!r} has more precision than minor units allow. "
             "Refusing rather than rounding someone's money."
         )
     minor = int(whole) * 100 + int(frac.ljust(2, "0") or 0)
@@ -139,8 +178,18 @@ def _pick_format(samples: list[str]) -> str:
     return best
 
 
+#: How each accepted layout reads to a person, for reporting back.
+_LAYOUT_NAMES = {
+    "%Y-%m-%d": "YYYY-MM-DD", "%Y/%m/%d": "YYYY/MM/DD", "%d/%m/%Y": "DD/MM/YYYY",
+    "%m/%d/%Y": "MM/DD/YYYY", "%d-%m-%Y": "DD-MM-YYYY", "%m-%d-%Y": "MM-DD-YYYY",
+    "%d/%m/%y": "DD/MM/YY", "%m/%d/%y": "MM/DD/YY", "%d %b %Y": "DD Mon YYYY",
+    "%d %B %Y": "DD Month YYYY", "%b %d %Y": "Mon DD YYYY", "%B %d %Y": "Month DD YYYY",
+    "%d.%m.%Y": "DD.MM.YYYY", "%Y%m%d": "YYYYMMDD",
+}
+
+
 def _parse(text: str, *, key_field: str, id_prefix: str):
-    rows, headers = _rows(text)
+    rows, headers, decimal = _rows(text)
     cols = sniff_columns(headers)
 
     missing = [f for f in ("account", "amount", "date") if f not in cols]
@@ -170,17 +219,25 @@ def _parse(text: str, *, key_field: str, id_prefix: str):
         account = (row.get(cols["account"]) or "").strip() or None
         ident = (row.get(cols[key_field]) or "").strip() if key_field in cols else ""
         out.append((ident or f"{id_prefix}{row_no}", account,
-                    _minor(row.get(cols["amount"]), row_no), day))
-    return out
+                    _minor(row.get(cols["amount"]), row_no, decimal), day))
+    return out, _LAYOUT_NAMES.get(fmt, fmt)
 
 
-def parse_bank_csv(text: str) -> list[BankRecord]:
-    """Money that arrived: the side being explained."""
-    return [BankRecord(i, a, m, d) for i, a, m, d in
-            _parse(text, key_field="key", id_prefix="row-")]
+def parse_bank_csv(text: str, *, report_layout: bool = False):
+    """Money that arrived: the side being explained.
+
+    With *report_layout*, also returns which date layout was chosen.
+    ``03/01/2026`` is the third of January or the first of March depending on
+    who wrote the file; one reading is picked for the whole file, and a caller
+    never told which has no way to notice the wrong one.
+    """
+    parsed, layout = _parse(text, key_field="key", id_prefix="row-")
+    recs = [BankRecord(i, a, m, d) for i, a, m, d in parsed]
+    return (recs, layout) if report_layout else recs
 
 
-def parse_ledger_csv(text: str) -> list[KeyRow]:
+def parse_ledger_csv(text: str, *, report_layout: bool = False):
     """What the books say it should be: the side being matched against."""
-    return [KeyRow(k, a, m, d) for k, a, m, d in
-            _parse(text, key_field="key", id_prefix="row-")]
+    parsed, layout = _parse(text, key_field="key", id_prefix="row-")
+    rows = [KeyRow(k, a, m, d) for k, a, m, d in parsed]
+    return (rows, layout) if report_layout else rows
