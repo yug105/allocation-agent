@@ -1,67 +1,123 @@
 <!doctype html><meta charset=utf-8><title>Allocation Agent</title>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <style>
-:root{--bg:#0d1117;--fg:#e6edf3;--dim:#8b949e;--faint:#6e7681;--line:#21262d;
---card:#161b22;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--accent:#58a6ff}
+/* Light, plain, and sized to survive video compression. Numbers carry the
+   story here, so they get the scale and the colour; everything else stays
+   quiet. System fonts only -- no network fetch on a cold free instance. */
+:root{
+  --bg:#ffffff; --surface:#f7f8fa; --raised:#fdfdfe;
+  --line:#e4e7ec; --line-strong:#d0d5dd;
+  --fg:#101828; --muted:#475467; --faint:#667085;
+  --accent:#1849a9; --accent-soft:#eff4ff;
+  --ok:#067647; --ok-soft:#ecfdf3;
+  --warn:#b54708; --warn-soft:#fffaeb;
+  --bad:#b42318; --bad-soft:#fef3f2;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);padding:2rem 1.25rem;
-font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+body{margin:0;background:var(--bg);color:var(--fg);padding:2.5rem 1.25rem 4rem;
+font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+-webkit-font-smoothing:antialiased}
 .w{max-width:64rem;margin:0 auto}
-h1{font-size:1.35rem;margin:0 0 .4rem}
-h2{font-size:1rem;margin:2rem 0 .6rem;font-weight:600}
-h2 .num{color:var(--faint);margin-right:.5rem;font-weight:400}
-p{margin:0 0 .8rem}
-.lede{font-size:1.02rem;max-width:46rem}
-.dim{color:var(--dim)}.faint{color:var(--faint);font-size:.82rem}
-button{background:#238636;color:#fff;border:0;padding:.6rem 1.1rem;border-radius:6px;
-cursor:pointer;font:inherit}button:disabled{opacity:.5;cursor:default}
-label{color:var(--dim);margin-right:1rem}
-input,select{background:var(--card);color:var(--fg);border:1px solid var(--line);
-border-radius:6px;padding:.4rem .6rem;font:inherit}
-input[type=file]{padding:.35rem;max-width:100%}
-.tabs{display:flex;gap:.25rem;border-bottom:1px solid var(--line);margin:1.5rem 0 1.25rem;
+
+h1{font-size:1.9rem;line-height:1.2;margin:0 0 .5rem;letter-spacing:-.02em}
+h2{font-size:1.05rem;margin:2.75rem 0 .75rem;font-weight:600;letter-spacing:-.01em;
+display:flex;align-items:baseline;gap:.6rem}
+h2 .num{font:600 .75rem/1 var(--mono);color:var(--accent);background:var(--accent-soft);
+padding:.35rem .5rem;border-radius:5px;letter-spacing:.02em}
+h3{font-size:.95rem;margin:1.75rem 0 .35rem;font-weight:600}
+p{margin:0 0 .85rem}
+.lede{font-size:1.1rem;line-height:1.55;max-width:44rem;color:var(--muted)}
+.dim{color:var(--muted)}
+.faint{color:var(--faint);font-size:.875rem}
+
+button{background:var(--accent);color:#fff;border:0;padding:.7rem 1.35rem;
+border-radius:8px;cursor:pointer;font:600 .95rem/1 inherit;transition:opacity .12s}
+button:hover{opacity:.9}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+label{color:var(--muted);margin-right:1.1rem;font-size:.9rem}
+input,select{background:#fff;color:var(--fg);border:1px solid var(--line-strong);
+border-radius:7px;padding:.5rem .65rem;font:inherit;font-size:.95rem}
+input:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+input[type=file]{padding:.4rem;max-width:100%;border-style:dashed;background:var(--surface)}
+
+.tabs{display:flex;gap:.4rem;border-bottom:1px solid var(--line);margin:1.5rem 0 1.5rem;
 flex-wrap:wrap}
-.tabs button{background:0;color:var(--dim);border:0;border-bottom:2px solid transparent;
-padding:.5rem .9rem;border-radius:0}
-.tabs button[aria-selected=true]{color:var(--fg);border-bottom-color:#238636}
-.box{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:1rem 1.15rem}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:1px;
-background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:1rem 0}
-.c{background:var(--card);padding:.9rem 1rem}
-.c .n{font-size:1.5rem;font-weight:600;font-variant-numeric:tabular-nums}
-.c .l{color:var(--dim);font-size:.8rem}
-/* the pipeline: what happens to one record, in order */
-.pipe{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.6rem;margin:.8rem 0}
-.step{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:.75rem .85rem;
-position:relative}
-.step .k{color:var(--faint);font-size:.72rem;letter-spacing:.06em;text-transform:uppercase}
-.step .t{font-weight:600;margin:.15rem 0 .25rem}
-.step .d{color:var(--dim);font-size:.8rem;line-height:1.45}
-.step .out{margin-top:.5rem;padding-top:.5rem;border-top:1px dashed var(--line);
-font-size:.82rem;font-variant-numeric:tabular-nums;min-height:1.5rem}
-.step .out b{color:var(--fg)}
-table{width:100%;border-collapse:collapse;font-size:.85rem;margin-top:.5rem}
-th{text-align:left;color:var(--dim);font-weight:500;border-bottom:1px solid var(--line);
-padding:.5rem .6rem .5rem 0}
-td{padding:.5rem .6rem .5rem 0;border-bottom:1px solid var(--line);vertical-align:top}
-td.num{text-align:right;font-variant-numeric:tabular-nums}
-.tag{font-size:.72rem;padding:.15rem .45rem;border-radius:4px;border:1px solid currentColor;
-white-space:nowrap;display:inline-block}
+.tabs button{background:0;color:var(--muted);border:0;border-bottom:2px solid transparent;
+padding:.7rem .2rem;margin-right:1.4rem;border-radius:0;font-weight:500}
+.tabs button:hover{color:var(--fg);opacity:1}
+.tabs button[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent);
+font-weight:600}
+
+.box{border:1px solid var(--line);background:var(--surface);border-radius:12px;
+padding:1.25rem 1.4rem}
+
+/* the metric row -- the numbers a viewer should read first */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(10rem,1fr));gap:.75rem;
+margin:1.25rem 0}
+.c{background:var(--raised);border:1px solid var(--line);border-radius:10px;
+padding:1rem 1.1rem}
+.c .n{font:600 2rem/1.1 var(--mono);letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.c .l{color:var(--faint);font-size:.8rem;margin-top:.4rem;line-height:1.35}
+.c .n.g{color:var(--ok)}.c .n.y{color:var(--warn)}.c .n.r{color:var(--bad)}
+
+/* the pipeline -- four steps, read left to right */
+.pipe{display:grid;grid-template-columns:repeat(auto-fit,minmax(12rem,1fr));gap:.75rem;
+margin:1rem 0}
+.step{border:1px solid var(--line);background:var(--raised);border-radius:10px;
+padding:.9rem 1rem}
+.step .k{font:600 .7rem/1 var(--mono);color:var(--accent);letter-spacing:.05em;
+text-transform:uppercase}
+.step .t{font-weight:600;margin:.4rem 0 .3rem;font-size:1rem}
+.step .d{color:var(--muted);font-size:.85rem;line-height:1.5}
+.step .out{margin-top:.7rem;padding-top:.6rem;border-top:1px solid var(--line);
+font-size:.85rem;font-variant-numeric:tabular-nums;min-height:1.6rem;color:var(--muted)}
+.step .out b{color:var(--fg);font-family:var(--mono)}
+
+table{width:100%;border-collapse:collapse;font-size:.9rem;margin-top:.6rem}
+th{text-align:left;color:var(--faint);font-weight:600;font-size:.78rem;
+text-transform:uppercase;letter-spacing:.04em;
+border-bottom:1px solid var(--line-strong);padding:.5rem .75rem .5rem 0;white-space:nowrap}
+td{padding:.7rem .75rem .7rem 0;border-bottom:1px solid var(--line);vertical-align:top;
+color:var(--muted)}
+td:first-child{color:var(--fg);font-family:var(--mono);font-size:.85rem}
+td.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);
+color:var(--fg)}
+tr:hover td{background:var(--surface)}
+
+.tag{font-size:.75rem;font-weight:600;padding:.25rem .55rem;border-radius:999px;
+white-space:nowrap;display:inline-block;border:1px solid currentColor}
 .g{color:var(--ok)}.y{color:var(--warn)}.r{color:var(--bad)}.b{color:var(--accent)}
-.set{border:1px solid var(--line);border-radius:8px;background:var(--card);
-padding:.9rem 1rem;margin:.6rem 0}
-.set .hd{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap}
-.sum{font-size:1.05rem;margin:.5rem 0 .1rem}.sum b{color:var(--ok)}
-.parts{list-style:none;padding:0;margin:.5rem 0 0}
-.parts li{display:flex;justify-content:space-between;gap:1rem;color:var(--dim);
-font-size:.82rem;padding:.15rem 0;border-top:1px dashed var(--line)}
-.why{color:var(--dim);font-size:.82rem;margin:.5rem 0 0}
+.tag.g{background:var(--ok-soft)}.tag.y{background:var(--warn-soft)}
+.tag.r{background:var(--bad-soft)}.tag.b{background:var(--accent-soft)}
+
+/* one settlement -- the arithmetic is the moment, so it gets the size */
+.set{border:1px solid var(--line);border-radius:12px;background:var(--raised);
+padding:1.1rem 1.25rem;margin:.75rem 0}
+.set .hd{display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;
+align-items:center;font-family:var(--mono);font-size:.9rem}
+.sum{font:600 1.5rem/1.35 var(--mono);margin:.9rem 0 .2rem;letter-spacing:-.02em;
+font-variant-numeric:tabular-nums;overflow-x:auto;padding-bottom:.2rem}
+.sum b{color:var(--ok)}
+.parts{list-style:none;padding:0;margin:.7rem 0 0}
+.parts li{display:flex;justify-content:space-between;gap:1rem;color:var(--muted);
+font-size:.85rem;font-family:var(--mono);padding:.35rem 0;border-top:1px solid var(--line);
+font-variant-numeric:tabular-nums}
+.why{color:var(--muted);font-size:.88rem;margin:.8rem 0 0;line-height:1.55}
+
+.note{border-left:3px solid var(--line-strong);padding:.1rem 0 .1rem .9rem;
+color:var(--muted);font-size:.9rem;margin:1rem 0}
 .hide{display:none}
 .scroll{overflow-x:auto}
-.note{border-left:2px solid var(--line);padding-left:.8rem;color:var(--dim);font-size:.85rem}
-ol.plain{padding-left:1.2rem;color:var(--dim);font-size:.88rem}
-ol.plain li{margin:.3rem 0}
-code{background:#1c2128;padding:.1rem .3rem;border-radius:4px;font-size:.85em}
+code{background:var(--surface);border:1px solid var(--line);padding:.1rem .35rem;
+border-radius:5px;font:.85em var(--mono)}
+@media (max-width:34rem){
+  body{padding:1.5rem 1rem 3rem}
+  h1{font-size:1.5rem}
+  .c .n{font-size:1.6rem}
+  .sum{font-size:1.15rem}
+}
 </style>
 <div class=w>
 
