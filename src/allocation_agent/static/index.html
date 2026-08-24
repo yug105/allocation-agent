@@ -53,6 +53,20 @@ font-weight:600}
 .box{border:1px solid var(--line);background:var(--surface);border-radius:12px;
 padding:1.25rem 1.4rem}
 
+/* the hero: the thirty seconds a judge spends before deciding */
+.hero{border:1px solid var(--line);border-radius:14px;background:var(--surface);
+padding:1.4rem 1.5rem;margin:1.75rem 0 .5rem}
+.hero .split{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));
+gap:1.25rem;margin:.35rem 0 1rem}
+.hero .big{font:600 2.35rem/1.05 var(--mono);letter-spacing:-.03em;
+font-variant-numeric:tabular-nums}
+.hero .cap{color:var(--faint);font-size:.82rem;margin-top:.45rem;line-height:1.45}
+.bar{display:flex;height:.55rem;border-radius:999px;overflow:hidden;margin:.2rem 0 .55rem;
+background:var(--line)}
+.bar i{display:block;height:100%}
+.hero .pt{font-size:.95rem;color:var(--fg);margin:.9rem 0 0;padding-top:.9rem;
+border-top:1px solid var(--line)}
+
 /* the metric row -- the numbers a viewer should read first */
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(10rem,1fr));gap:.75rem;
 margin:1.25rem 0}
@@ -125,6 +139,10 @@ border-radius:5px;font:.85em var(--mono)}
 <p class="lede dim">Money lands in a bank account. Somewhere in the books there is a
 record of what it was for. This connects them — and when one payment covers
 <i>several</i> records, it notices that instead of guessing.</p>
+
+<!-- The first thing a visitor sees is a result, not an invitation to press
+     something. Precomputed over the whole held-out set at export time. -->
+<div id=hero class=hero>loading…</div>
 
 <!-- ── what data is in here, before anyone clicks anything ────────────── -->
 <h2><span class=num>1</span>What it is running on</h2>
@@ -288,6 +306,40 @@ async function call(url, opts, btn){
 }
 const json=b=>({method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});
 
+// ── 0. the hero: a result before any click ─────────────────────────────
+fetch('/api/overview').then(r=>r.json()).then(o=>{
+  const pctOf = v => (v / o.total_value * 100);
+  $('#hero').innerHTML=`
+  <div class=split>
+    <div>
+      <div class="big g">${money(o.posted_value)}</div>
+      <div class=cap>reconciled without a person — <b>${pct(o.straight_through_rate)}</b>
+      of records, and <b>${pct(o.precision_of_posted)}</b> of those were right</div>
+    </div>
+    <div>
+      <div class="big y">${money(o.queue_value)}</div>
+      <div class=cap><b>${pctOf(o.queue_value).toFixed(1)}%</b> of the value still needs
+      a human, across ${fmt(o.counts.suspected_grouped + o.counts.queued)} items</div>
+    </div>
+    <div>
+      <div class="big b">${pct(o.grouped_share_of_queue)}</div>
+      <div class=cap>of that queue is <b>one payment covering several entries</b> —
+      the case this bank's own rules engine resolved none of</div>
+    </div>
+  </div>
+  <div class=bar>
+    <i style="width:${pctOf(o.posted_value)}%;background:var(--ok)"></i>
+    <i style="width:${pctOf(o.value_by_outcome.suspected_grouped||0)}%;background:var(--accent)"></i>
+    <i style="width:${pctOf(o.value_by_outcome.queued||0)}%;background:var(--warn)"></i>
+  </div>
+  <p class=faint style="margin:0">${fmt(o.n_records)} held-out records the models never saw.
+  Amounts are BenchRec's <b>obfuscated units</b>, not a real currency. The ten largest
+  exceptions are ${pct(o.top10_share_of_queue)} of the queue's value, so the first ten
+  clicks matter more than the next four hundred.</p>
+  <p class=pt>The gap is not the easy matches — it is the grouped ones, and that is
+  where <b>${pct(o.grouped_share_of_queue)}</b> of the unreconciled money sits.</p>`;
+}).catch(()=>{ $('#hero').innerHTML='<p class=y style="margin:0">Overview unavailable — press Run below.</p>'; });
+
 // ── 1. what data is loaded ─────────────────────────────────────────────
 fetch('/api/meta').then(r=>r.json()).then(m=>{
   $('#data').innerHTML=`
@@ -337,6 +389,10 @@ function renderRun(d){
   $('#out').innerHTML=`
   <div class=grid>
     <div class=c><div class=n>${fmt(d.n_records)}</div><div class=l>records in</div></div>
+    <div class=c><div class="n g">${money(d.posted_value)}</div>
+      <div class=l>reconciled without a person</div></div>
+    <div class=c><div class="n y">${money(d.queue_value)}</div>
+      <div class=l>value left needing a human</div></div>
     <div class=c><div class="n g">${pct(d.precision_of_posted)}</div>
       <div class=l>of what it posted was right</div></div>
     <div class=c><div class=n>${pct(d.straight_through_rate)}</div>
@@ -357,7 +413,8 @@ function renderRun(d){
   </table>
 
   <h3 style="font-size:.95rem;margin:1.4rem 0 .2rem">The ${fmt(d.n_exceptions)} a person would see</h3>
-  <p class=faint style="margin:0 0 .4rem">Each says why it stopped, so the reviewer
+  <p class=faint style="margin:0 0 .4rem">Ordered by value at risk, biggest first —
+  which is how a queue is actually worked. Each says why it stopped, so the reviewer
   starts from a reason rather than a blank row.</p>
   <div class=scroll><table>
   <tr><th>record</th><th class=num>amount</th><th>stopped at</th><th>why</th></tr>

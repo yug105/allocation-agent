@@ -892,3 +892,91 @@ def test_the_run_reports_the_threshold_it_used(client):
     """A run whose grouping cut cannot be read back cannot be reproduced."""
     body = client.post("/api/run", json={"limit": 1, "mult_threshold": 0.9}).json()
     assert body["mult_threshold"] == 0.9
+
+
+# --------------------------------------------------------------------------- #
+# Above the fold.
+#
+# Judges scan the top of the page for about thirty seconds and form an opinion.
+# Until now that surface was a title, a paragraph and three dataset counts --
+# nothing had happened, and nothing could until a button was pressed. And every
+# figure on the page was a record count, while every reconciliation product
+# measures unreconciled *value*: "1,535 records" is a statistic, "15.6M sitting
+# in review" is a reason to care.
+#
+# Computed at export time over the whole held-out set, not at startup: 4,000
+# records take ~90s on the deployed free instance and the health check would
+# fail before the container was ready.
+# --------------------------------------------------------------------------- #
+
+def test_the_overview_is_served_without_running_anything(client):
+    body = client.get("/api/overview").json()
+    assert body["n_records"] == 4000
+    assert body["posted_value"] > 0 and body["queue_value"] > 0
+
+
+def test_the_overview_is_measured_in_value_not_only_counts(client):
+    body = client.get("/api/overview").json()
+    assert body["posted_value"] + body["queue_value"] == pytest.approx(body["total_value"], rel=1e-6)
+    assert 0 < body["queue_share_of_value"] < 1
+
+
+def test_the_overview_names_where_the_queue_value_actually_sits(client):
+    """The grouped case is the one the bank's rules engine resolved 0% of, and
+    it is where the money needing a person is. That is the whole argument."""
+    body = client.get("/api/overview").json()
+    assert body["grouped_share_of_queue"] > 0.5
+    assert body["value_by_outcome"]["suspected_grouped"] > body["value_by_outcome"]["queued"]
+
+
+def test_the_overview_agrees_with_a_live_run(client):
+    """A cached figure that drifts from what the buttons produce is worse than
+    no figure. Same code path, so the rates must line up."""
+    overview = client.get("/api/overview").json()
+    live = client.post("/api/run", json={"limit": 4000}).json()
+    assert live["straight_through_rate"] == pytest.approx(
+        overview["straight_through_rate"], abs=0.005)
+    assert live["precision_of_posted"] == pytest.approx(
+        overview["precision_of_posted"], abs=0.005)
+
+
+def test_the_page_shows_a_result_before_any_click(client):
+    page = client.get("/")
+    assert "/api/overview" in page.text
+    assert "id=hero" in page.text
+
+
+def test_the_page_states_the_amounts_are_obfuscated_units(client):
+    """BenchRec's amounts are not real currency. Rendering them with a symbol
+    would imply a real bank is short 17.9 million.
+
+    Checks the whole document: the caveat is rendered into the hero, so it sits
+    in the script block rather than in the static markup.
+    """
+    page = client.get("/").text.lower()
+    assert "obfuscated" in page
+    assert "not a real currency" in page
+
+
+def test_a_run_reports_the_value_it_moved_not_only_the_record_count(client):
+    body = client.post("/api/run", json={"limit": 200}).json()
+    assert body["posted_value"] >= 0
+    assert body["queue_value"] >= 0
+    for e in body["exceptions"]:
+        assert "amount" in e
+
+
+def test_the_exception_queue_is_ordered_by_value_at_risk(client):
+    """A controller works it top-down, and the top ten are a tenth of the
+    queue's value. Record order wastes that."""
+    body = client.post("/api/run", json={"limit": 500}).json()
+    amounts = [abs(e["amount"]) for e in body["exceptions"]]
+    assert amounts == sorted(amounts, reverse=True)
+
+
+def test_the_reported_exception_total_covers_every_exception_not_the_first_page(client):
+    """`exceptions` is capped at 100 for payload size. A total computed from
+    that list would silently describe a fraction of the queue."""
+    body = client.post("/api/run", json={"limit": 2000}).json()
+    assert body["n_exceptions"] > len(body["exceptions"])
+    assert body["queue_value"] > sum(abs(e["amount"]) for e in body["exceptions"])

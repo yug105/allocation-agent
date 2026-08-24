@@ -128,6 +128,7 @@ class _State:
         self.prior = None
         self.meta: dict[str, Any] = {}
         self.error: str | None = None
+        self.overview: dict[str, Any] = {}
         self.settlements: list[dict] = []
         self.payments: dict[str, dict] = {}
 
@@ -163,6 +164,10 @@ class _State:
             bundle["ranker"], bundle["detector"], bundle["prior"]
         )
         self.meta = json.loads((ARTIFACTS / "meta.json").read_text())
+
+        ov = ARTIFACTS / "overview.json"
+        if ov.exists():
+            self.overview = json.loads(ov.read_text())
 
         rr = ARTIFACTS / "reconriver.json"
         if rr.exists():
@@ -208,6 +213,18 @@ def create_app() -> FastAPI:
                 "free_tier_records_per_second": FREE_TIER_RECORDS_PER_SECOND,
                 "laptop_records_per_second": LAPTOP_RECORDS_PER_SECOND}
 
+    @app.get("/api/overview")
+    def overview() -> dict:
+        """What the page shows before anyone presses anything.
+
+        Precomputed by scripts/export_overview.py over the whole held-out set.
+        Running it at startup would take ~90s on the deployed free instance and
+        the health check would fail before the container was ready.
+        """
+        if not state.overview:
+            raise HTTPException(503, "overview not exported; run scripts/export_overview.py")
+        return state.overview
+
     @app.post("/api/run")
     def run(req: RunRequest) -> dict:
         if not state.ready:
@@ -222,6 +239,9 @@ def create_app() -> FastAPI:
             policy_version="v0.1", notes="held-out demo slice"))
 
         summary = {"posted": 0, "queued": 0, "no_candidate": 0, "suspected_grouped": 0}
+        # Value, not only counts. A reconciliation queue is worked by amount at
+        # risk, so the money is the reportable figure and the count is context.
+        value = dict.fromkeys(summary, 0.0)
         exceptions: list[dict] = []
         posted_correct = 0
         started = time.perf_counter()
@@ -236,6 +256,7 @@ def create_app() -> FastAPI:
                          n_candidates=r["n_candidates"], path=r["path"],
                          evidence=r["evidence"])
             summary[r["outcome"]] += 1
+            value[r["outcome"]] += abs(rec.amount_minor) / 100
 
             if r["outcome"] == "posted":
                 posted_correct += (not truly_mult and r["keys"][0] == truth_key)
@@ -248,6 +269,9 @@ def create_app() -> FastAPI:
 
         audit.commit(); audit.finish_run(run_id)
         elapsed = time.perf_counter() - started
+        # Biggest first: a controller works the queue top-down, and the ten
+        # largest are about a tenth of its value. Record order wastes that.
+        exceptions.sort(key=lambda e: -abs(e["amount"]))
 
         return {
             "run_id": run_id,
@@ -260,6 +284,11 @@ def create_app() -> FastAPI:
             "seconds": round(elapsed, 3),
             "llm_calls_on_matching_path": 0,
             "mult_threshold": req.mult_threshold,
+            "posted_value": round(value["posted"], 2),
+            # Summed over every exception, not over the 100 returned below --
+            # a total taken from the truncated list describes a fraction of it.
+            "queue_value": round(sum(v for k, v in value.items() if k != "posted"), 2),
+            "value_by_outcome": {k: round(v, 2) for k, v in value.items()},
             "exceptions": exceptions[:100],
             "n_exceptions": len(exceptions),
         }

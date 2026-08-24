@@ -24,6 +24,7 @@ Regenerating things (each reads `data/`, writes `artifacts/`):
 ```bash
 uv run python scripts/export_artifacts.py    # -> demo.json, models.pkl, meta.json
 uv run python scripts/export_reconriver.py   # -> reconriver.json
+uv run python scripts/export_overview.py     # -> overview.json (the hero figures)
 uv run python scripts/train_ranker.py        # retrains; the leakage gate runs here
 uv run python scripts/eval_solver.py         # regenerates the README solver table
 uv run python scripts/run_learning.py        # the learning experiment + its controls
@@ -67,8 +68,21 @@ payments it recovers the subset — cardinality-layered bitset DP, smallest
 subset wins, and a second subset of the same size makes it `AMBIGUOUS` rather
 than picking. Ties and oversized pools are refused, not guessed.
 
-**`artifacts/` mixes two kinds of file.** `demo.json`, `models.pkl` and
-`meta.json` are build inputs, committed, produced by the scripts above and
+**The hero renders before any click.** `/api/overview` serves
+`artifacts/overview.json`, precomputed over the whole held-out set by
+`scripts/export_overview.py`. It is not computed at startup: 4,000 records take
+~90s on the deployed free instance and the health check would fail first. It
+must agree with a live run — a test pins that — because a cached figure that
+drifts from what the buttons produce is worse than no figure.
+
+**Report value, not only counts.** Reconciliation is worked by amount at risk,
+so every figure has a money form and the queue is ordered biggest-first. Totals
+are summed over *all* exceptions, never over the 100 the API returns. BenchRec
+amounts are obfuscated units and the page says so rather than implying a
+currency.
+
+**`artifacts/` mixes two kinds of file.** `demo.json`, `models.pkl`,
+`overview.json` and `meta.json` are build inputs, committed, produced by the scripts above and
 loaded once at startup into `_State`. `runs.db` is runtime state — the audit
 log — gitignored and dockerignored. `ARTIFACTS_DIR` overrides the location;
 `_State.load()` never raises, it records the failure and serves a 503.
