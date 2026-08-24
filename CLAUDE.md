@@ -1,99 +1,159 @@
-# Allocation Agent — working rules
+# CLAUDE.md
 
-Bank-to-ledger reconciliation. Deterministic where money is decided; a model
-only writes explanations.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+Bank-to-ledger reconciliation. Money arrives in a bank account; the books say
+what it was for; this matches them — and takes on the case a real bank's rules
+engine left entirely manual: one payment covering several ledger entries.
 
 ## Commands
 
 ```bash
-uv run pytest -q -p no:warnings          # full suite, ~24s
-uv run python scripts/eval_solver.py     # regenerates the README solver table
-uv run python scripts/train_ranker.py    # retrains; the leakage gate runs here
+uv run pytest -q -p no:warnings              # full suite, ~24s
+uv run pytest tests/test_solver.py -q        # one file
+uv run pytest -q -k "ambiguous"              # one test by name
+uv run ruff check src tests scripts          # baseline is zero errors
+uv run ruff check src tests scripts --fix
+
 ARTIFACTS_DIR=$PWD/artifacts uv run uvicorn allocation_agent.api:create_app \
-  --factory --port 8077                  # serve locally
+  --factory --port 8077                      # serve locally
 ```
 
-Live: https://allocation-agent.onrender.com — free tier, sleeps after ~15 min
-idle and takes ~50s to wake. Docker builds have taken up to 8 minutes.
+Regenerating things (each reads `data/`, writes `artifacts/`):
 
-## The one rule everything else follows from
+```bash
+uv run python scripts/export_artifacts.py    # -> demo.json, models.pkl, meta.json
+uv run python scripts/export_reconriver.py   # -> reconriver.json
+uv run python scripts/train_ranker.py        # retrains; the leakage gate runs here
+uv run python scripts/eval_solver.py         # regenerates the README solver table
+uv run python scripts/run_learning.py        # the learning experiment + its controls
+```
 
-**A claim that nothing checks is not a claim.** Every defect found in this
-repo, without exception, was something asserted and unenforced:
+Live at https://allocation-agent.onrender.com — free tier, ~45 rec/sec, sleeps
+after ~15 min idle and takes ~50s to wake. Docker builds have taken 8+ minutes,
+so do not push shortly before a demo.
 
-| what was claimed | what actually held |
+## Architecture
+
+**One matching path, two callers.** `_match_one()` in `api.py` is the whole
+per-record pipeline. `/api/run` (the BenchRec demo) and `/api/reconcile`
+(uploaded CSVs) both call it. Keep it that way — a separate path for user data
+would make the demo's measured numbers evidence for nothing but the demo.
+
+The four stages, in order, each able to end the record:
+
+1. **Narrow** (`match/blocker.py`) — union of two hash lookups, `(account,
+   amount)` and `(account, day ± slack)`. 98.9% recall, ~44 candidates from
+   103k. No candidates → `no_candidate`.
+2. **Direct** — if exactly one candidate's amount equals the record's exactly,
+   take it at `DIRECT_CONFIDENCE` (0.9898, the measured rate) and **skip stage
+   3**. On that subpopulation the multiplicity detector is right 12.2% of the
+   time against 96.3% overall, so it does not get to overrule an exact amount.
+3. **Group check** (`match/multiplicity.py`) — a separate GBDT asking "is this
+   one payment covering several entries?" Fires → `suspected_grouped`, no
+   single match is claimed.
+4. **Rank** (`match/ranker.py`) — LightGBM LambdaRank over 12 features.
+   Confidence is the sigmoid of the margin between first and second place;
+   with no runner-up there is no margin, so confidence is `None` and the
+   record is queued rather than given a fabricated number.
+
+Then `decide/gate.py` compares confidence to a bar that **rises with the
+amount**, and every decision is appended to `report/audit.py`.
+
+**The solver is a separate problem** (`match/solver.py`), reached through
+`/api/settlements`, not through `_match_one`. Given a credit and ~100 candidate
+payments it recovers the subset — cardinality-layered bitset DP, smallest
+subset wins, and a second subset of the same size makes it `AMBIGUOUS` rather
+than picking. Ties and oversized pools are refused, not guessed.
+
+**`artifacts/` mixes two kinds of file.** `demo.json`, `models.pkl` and
+`meta.json` are build inputs, committed, produced by the scripts above and
+loaded once at startup into `_State`. `runs.db` is runtime state — the audit
+log — gitignored and dockerignored. `ARTIFACTS_DIR` overrides the location;
+`_State.load()` never raises, it records the failure and serves a 503.
+
+**`models.pkl` couples three things.** It unpickles
+`allocation_agent.match.ranker.Ranker` and the two multiplicity classes, so
+those modules must stay importable even though `api.py` never imports them by
+name — a static import graph will call them dead. `FEATURE_NAMES` in
+`match/features.py` is an ordering contract with the pickled model: change the
+order and the model silently scores the wrong columns.
+
+**The page is a real dependency.** `static/index.html` is served by `_page()`
+and read from disk per request. Tests assert it can reach every endpoint, reads
+only fields `/api/meta` actually returns, and shows no internal enum name. The
+server owns every number the page displays (`FREE_TIER_RECORDS_PER_SECOND`,
+`MIN_FOR_RATES`, `BLOCKING`) and ships them through `/api/meta`.
+
+**Not on any live path:** `learn/` is an offline experiment run by
+`scripts/run_learning.py` — correcting a decision in the demo retrains nothing.
+`learn/casebase.py` is tested and called by nothing. `pipeline.py` is used only
+by `scripts/run_batch.py` and its test. Do not describe these as product
+features.
+
+## The rule everything else follows from
+
+**A claim that nothing checks is not a claim.** Every defect found here was
+something asserted and unenforced:
+
+| claimed | what actually held |
 |---|---|
-| `max=2000` on the record input | advisory; the handler read `.value` anyway |
+| `max=2000` on an input | advisory; the handler read `.value` anyway |
 | a badge reading "Found the group" | derived from `status`, which is `solved` for wrong answers too |
-| "rates are withheld below 20" | guarded the record count; precision is a rate over *answers* |
-| "the narrator writes explanations" | constructed in `create_app()` and never called |
+| "rates withheld below 20" | guarded record count; precision is a rate over *answers* |
+| "the narrator writes explanations" | constructed in `create_app()`, never called |
 | "we checked for leakage" | a module with tests that nothing ran |
 | a cap of 4 payments | admitted exactly one answer, and it was wrong |
 
 When you write a rule, write the test that fails without it. When you state a
 number, have code produce it.
 
-## TDD, in this repo's sense
+## Testing
 
-Write the failing test first — and make it fail *for the right reason*. Several
-tests here passed while testing nothing:
+Make the failing test fail *for the right reason*. Several here passed while
+testing nothing: `assert "not" in verdict` matches *Nothing* and *Notable*;
+`pytest.raises(match="7.50")` treats `.` as a wildcard; a duplicate test
+definition shadowed the first so it never ran. `tests/test_suite_integrity.py`
+now catches duplicate names and assertion-free bodies, and ruff's `F811` and
+`RUF043` catch the other two. Assert on exact strings or a field, never a
+substring a dozen other strings contain.
 
-- `assert "not" in verdict` matches *Nothing*, *Notable*, *Another*.
-- `test_the_narrator_is_actually_invoked` was defined twice; Python kept the
-  second, so the one asserting real behaviour never ran.
-- Two rate tests bracketed `limit=1` and `limit=150` and passed for any
-  threshold between 2 and 150.
+## Numbers and evaluation
 
-`tests/test_suite_integrity.py` now catches duplicate names and assertion-free
-bodies. Assert on exact strings or on a field, never a substring that a dozen
-other strings contain.
-
-## Numbers
-
-**One owner per number, and code produces it.** Four different throughput
-figures were live at once (40, 45, 495, 524) because each was typed where it
-was needed. Constants live in `api.py` and reach the page through `/api/meta`.
-
-Never hand-carry a measurement into prose. Regenerate the table
-(`scripts/eval_solver.py`) — doing that caught a ties-refused figure that was
-9.3% and had been written as 10.7%.
+**One owner per number, and code produces it.** Four throughput figures were
+live at once (40, 45, 495, 524) because each was typed where it was needed.
+Constants live in `api.py` and reach the page through `/api/meta`. Never
+hand-carry a measurement into prose — regenerate the table instead; doing that
+caught a figure written as 10.7% that was 9.3%.
 
 **Report coverage and precision separately.** One aggregate hid that 51% of
 "solved" settlements were the wrong set.
 
-## Evaluation
-
-- Splits are temporal and group-respecting. The test set is frozen.
-- Demo and sample data are **systematic** samples — every Nth by position,
-  never by outcome. An exporter that filtered to easy instances once produced
-  100% exact recovery, which is how it was caught.
-- `assert_no_leakage` runs inside `train_ranker.py` and raises. A model trained
-  on a leaked feature must not reach disk.
-- No accuracy figure for uploaded files: there is no answer key, so any number
-  would be invented.
+Splits are temporal and group-respecting; the test set is frozen. Demo samples
+are systematic — every Nth by position, never by outcome, because ReconRiver
+front-loads its hard cases and an exporter that filtered to easy instances once
+produced a fake 100%. `assert_no_leakage` runs inside `train_ranker.py` and
+raises. No accuracy figure is reported for uploaded files: there is no answer
+key, so any number would be invented.
 
 ## Money
 
-Integer minor units everywhere. `BankRecord` refuses floats. Parsers refuse
+Integer minor units everywhere; `BankRecord` refuses floats. Parsers refuse
 more than two decimals rather than rounding — every other error announces
-itself, that one balances and lies.
-
-The decimal mark travels with the delimiter: a semicolon file uses a comma
-decimal. Read `1250,00` as comma-thousands and it becomes 125,000.00.
+itself, that one balances and lies. The decimal mark travels with the
+delimiter: a semicolon file uses a comma decimal, and reading `1250,00` as
+comma-thousands makes it 125,000.00.
 
 ## When something fails
 
-Prefer refusing to guessing. `INFEASIBLE`, `AMBIGUOUS`, and "sent to a person"
-are real answers. A wrong auto-post balances the books against the wrong
-invoices, which is worse than an absent one.
+Prefer refusing to guessing. `INFEASIBLE`, `AMBIGUOUS` and "sent to a person"
+are real answers; a wrong auto-post balances the books against the wrong
+invoices, which is worse than an absent one. Explain in the words of someone
+who has read only the problem statement — `suspected_grouped` is a good
+variable name and a terrible label.
 
-Explain in the words of someone who has read only the problem statement. No
-enum names on the page — `suspected_grouped` is a good variable and a terrible
-label.
-
-## Before claiming anything is done
-
-Run the suite. Then check the thing you changed actually behaves differently —
-grepping an attribute is not exercising a behaviour. Re-run the *whole* battery
-after a fix, not the cases you touched: fixing three CSV defects introduced a
-500 on empty files, caught only by the full re-run.
+Before claiming anything is done: run the suite, then check the thing you
+changed actually behaves differently — grepping an attribute is not exercising
+a behaviour. Re-run the *whole* battery after a fix, not the cases you touched;
+fixing three CSV defects introduced a 500 on empty files, caught only by the
+full re-run.
