@@ -78,6 +78,13 @@ MIN_FOR_RATES = 20
 # window would have silently disagreed with what the audit log claimed was used.
 BLOCKING = BlockingConfig(date_slack_days=7)
 
+# Where the grouping detector's probability becomes a routing decision. Owned
+# here because it was written twice -- 0.7 in the demo endpoint's request model
+# and 0.5 hardcoded in the upload path -- so the same record could be called
+# grouped by one and matched by the other. Measured on the held-out split, that
+# difference is 68.4% precision against 57.6%.
+MULT_THRESHOLD = 0.7
+
 # Measured, and owned here so exactly one place states it. Median of three warm
 # runs each: 2,000 records on an 8-core arm64 laptop, 500 on the deployed free
 # instance. Four different figures were live at once before this constant
@@ -94,7 +101,7 @@ class RunRequest(BaseModel):
     # Anything larger is clamped to the size of the held-out set.
     limit: int = Field(default=200, gt=0, le=10**9)
     review_all: bool = False
-    mult_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    mult_threshold: float = Field(default=MULT_THRESHOLD, ge=0.0, le=1.0)
 
 
 class SettlementRequest(BaseModel):
@@ -252,6 +259,7 @@ def create_app() -> FastAPI:
             "records_per_second": len(records) / elapsed if elapsed else 0.0,
             "seconds": round(elapsed, 3),
             "llm_calls_on_matching_path": 0,
+            "mult_threshold": req.mult_threshold,
             "exceptions": exceptions[:100],
             "n_exceptions": len(exceptions),
         }
@@ -478,7 +486,7 @@ def create_app() -> FastAPI:
         started = time.perf_counter()
 
         for rec in records:
-            r = _match_one(state, rec, index, key_stats, gate, 0.5, narrator)
+            r = _match_one(state, rec, index, key_stats, gate, MULT_THRESHOLD, narrator)
             audit.record(rec.record_id, r["decision"], keys=r["keys"],
                          n_candidates=r["n_candidates"], path=r["path"],
                          evidence=r["evidence"])

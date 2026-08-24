@@ -872,3 +872,23 @@ def test_the_note_a_visitor_must_read_is_not_the_faintest_text(client):
     page = client.get("/").text
     est = page[page.index("id=estimate") - 200:page.index("id=estimate") + 200]
     assert "class=faint" not in est
+
+
+# --------------------------------------------------------------------------- #
+# The demo endpoint defaulted to 0.7 and the upload endpoint hardcoded 0.5, so
+# the same record could be called grouped by one and matched by the other. At
+# those two points the detector's test precision is 68.4% and 57.6% -- the
+# choice is worth 11 points and neither place owned it.
+# --------------------------------------------------------------------------- #
+
+def test_both_endpoints_use_the_same_grouping_threshold(client):
+    from allocation_agent.api import MULT_THRESHOLD, RunRequest
+    assert RunRequest().mult_threshold == MULT_THRESHOLD
+    page_default = client.post("/api/run", json={"limit": 1}).json()
+    assert page_default["mult_threshold"] == MULT_THRESHOLD
+
+
+def test_the_run_reports_the_threshold_it_used(client):
+    """A run whose grouping cut cannot be read back cannot be reproduced."""
+    body = client.post("/api/run", json={"limit": 1, "mult_threshold": 0.9}).json()
+    assert body["mult_threshold"] == 0.9

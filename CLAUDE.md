@@ -27,6 +27,7 @@ uv run python scripts/export_reconriver.py   # -> reconriver.json
 uv run python scripts/train_ranker.py        # retrains; the leakage gate runs here
 uv run python scripts/eval_solver.py         # regenerates the README solver table
 uv run python scripts/run_learning.py        # the learning experiment + its controls
+uv run python scripts/model_diagnostics.py   # train/val/test gap, F1, recall, confusion
 ```
 
 Live at https://allocation-agent.onrender.com — free tier, ~45 rec/sec, sleeps

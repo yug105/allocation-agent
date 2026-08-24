@@ -69,13 +69,38 @@ Getting here required discovering that autonomy alone is a gameable metric: feed
 
 ### Multiplicity detection — the 11.3% nobody automates
 
+**At the threshold the system actually runs** (0.7), on the held-out split:
+
+| | precision | recall | F1 |
+|---|---|---|---|
+| **shipped operating point** | **68.4%** | **87.3%** | **0.767** |
+| threshold 0.5 | 57.6% | 93.2% | 0.712 |
+| threshold 0.3 | 42.1% | 97.4% | 0.588 |
+
+Confusion matrix at 0.7: 3,319 grouped records caught, 485 missed, and **1,535 single-key records wrongly sent for review**. Roughly one in three of its alerts is a false alarm — the cost of catching 87% of the ones nobody else automates.
+
+Ranked by confidence instead of thresholded, it looks better, and this is the number an earlier version of this README led with:
+
 | flag top | precision | recall |
 |---|---|---|
-| **5%** | **96.3%** | 47.3% |
+| 5% | 96.3% | 47.3% |
 | 10% | 77.4% | 76.1% |
 | 15% | 62.1% | 91.6% |
 
-PR-AUC 87.2% against a 10.2% positive rate. Beats the obvious rule (no exact-amount match) on F1: 76.7% vs 72.2%.
+Both are true and the first is the honest one, because 0.7 is what runs. PR-AUC 87.2% against a 10.2% positive rate; beats the obvious rule (no exact-amount match) on F1, 76.7% vs 72.2%.
+
+### Is either model overfitting?
+
+Same temporal split, comparing what each model scores on data it was fitted on against data it was not:
+
+| model | train | val | test | gap |
+|---|---|---|---|---|
+| ranker, top-1 | 97.99% | 95.56% | 96.08% | **+1.91 pp** |
+| detector, PR-AUC | 0.900 | 0.849 | 0.872 | **+0.028** |
+
+Neither is memorising. Val sits slightly below test for both, which is the temporal split doing its job rather than a bug — the validation window is a different fortnight of the bank's year, not a random sample of the same one.
+
+One caveat on that table: those top-1 figures cap candidates at 24 per record so the three splits are measured under identical conditions. Against the full candidate set the test figure is **93.60%**, which is the number quoted above and the one the system delivers. Regenerate all of it with `uv run python scripts/model_diagnostics.py`.
 
 ---
 
