@@ -52,7 +52,7 @@ def measure_blocking(
     evaluated = 0
     sizes: list[int] = []
 
-    for record, label, is_mult in zip(dataset.records, dataset.labels, dataset.is_mult):
+    for record, label, is_mult in zip(dataset.records, dataset.labels, dataset.is_mult, strict=False):
         candidates = block(record, idx, cfg)
         sizes.append(len(candidates))
         if is_mult:

@@ -4,14 +4,18 @@ Temporal split, group-respecting. The bar is a trivial baseline (exact amount,
 tiebreak nearest date) and the ceiling is blocking recall.
 """
 from __future__ import annotations
-import sys, time
-import numpy as np, pandas as pd
+
+import sys
+import time
+
+import numpy as np
+import pandas as pd
 
 from allocation_agent.adapters.benchrec import load_benchrec
 from allocation_agent.eval.leakage import assert_no_leakage
 from allocation_agent.eval.splits import temporal_split
 from allocation_agent.match.blocker import BlockingConfig, block
-from allocation_agent.match.features import build_key_stats, featurise, FEATURE_NAMES
+from allocation_agent.match.features import FEATURE_NAMES, build_key_stats, featurise
 from allocation_agent.match.ranker import Ranker, RankerConfig
 from allocation_agent.stores.keys import KeyIndex
 

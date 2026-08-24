@@ -25,7 +25,7 @@ def rec(minor=10_000, day=100) -> BankRecord:
 
 def f(record, key_stats, n_candidates=1) -> dict[str, float]:
     vec = featurise(record, key_stats, n_candidates=n_candidates)
-    return dict(zip(FEATURE_NAMES, vec))
+    return dict(zip(FEATURE_NAMES, vec, strict=False))
 
 
 # --------------------------------------------------------------------------- #

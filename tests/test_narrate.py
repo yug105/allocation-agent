@@ -11,9 +11,12 @@ The diagnosis itself is arithmetic and happens before any model is called.
 import pytest
 
 from allocation_agent.decide.narrate import (
-    Narrator, NarrationError, StubBackend, diagnose_residual, validate_numbers,
+    NarrationError,
+    Narrator,
+    StubBackend,
+    diagnose_residual,
+    validate_numbers,
 )
-
 
 # --------------------------------------------------------------------------- #
 # residual diagnosis is arithmetic, not language
@@ -64,7 +67,7 @@ def test_an_invented_figure_is_rejected():
 
 
 def test_the_rejection_names_the_offending_figure():
-    with pytest.raises(NarrationError, match="7.50"):
+    with pytest.raises(NarrationError, match=r"7\.50"):
         validate_numbers("charge of 7.50", allowed={"2.00"})
 
 

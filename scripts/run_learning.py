@@ -5,8 +5,11 @@ thousand. A real deployment starts cold, so this does too: a deliberately small
 initial fit, then learning from what the reviewer says.
 """
 from __future__ import annotations
+
 import time
-import numpy as np, pandas as pd
+
+import numpy as np
+import pandas as pd
 
 from allocation_agent.adapters.benchrec import load_benchrec
 from allocation_agent.decide.gate import GateConfig, Outcome, decide

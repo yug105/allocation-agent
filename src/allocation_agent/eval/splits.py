@@ -77,7 +77,7 @@ def temporal_split(
     # A group is placed by its earliest dated row, so a group spanning the cut
     # falls entirely on the earlier side.
     group_day: dict[str, int] = {}
-    for day, group in zip(days, groups):
+    for day, group in zip(days, groups, strict=False):
         if day is None:
             continue
         prev = group_day.get(group)
@@ -91,7 +91,7 @@ def temporal_split(
     train_end = int(n * train_frac)
     val_end = train_end + int(n * val_frac)
 
-    assignment: dict[str, int] = {g: 0 for g in undated}  # undated -> train
+    assignment: dict[str, int] = dict.fromkeys(undated, 0)  # undated -> train
     for i, group in enumerate(ordered):
         assignment[group] = 0 if i < train_end else (1 if i < val_end else 2)
 

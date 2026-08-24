@@ -147,7 +147,7 @@ def run_batch(
             margin = float(scores[order[0]] - scores[order[1]]) if len(order) > 1 else 1.0
             confidence = float(1.0 / (1.0 + np.exp(-margin)))
             path = "ranked"
-            evidence = {"margin": round(margin, 4), "n_scored": int(len(scores))}
+            evidence = {"margin": round(margin, 4), "n_scored": len(scores)}
         else:
             chosen, confidence = _fallback_choice(record, candidates, key_stats)
             path = "fallback_rules"

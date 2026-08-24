@@ -2,8 +2,11 @@
 
 Recall is a ceiling on everything downstream. Run this before building the ranker.
 """
-import sys, time
+import sys
+import time
+
 import pandas as pd
+
 from allocation_agent.adapters.benchrec import load_benchrec
 from allocation_agent.eval.blocking_recall import measure_blocking
 from allocation_agent.match.blocker import BlockingConfig

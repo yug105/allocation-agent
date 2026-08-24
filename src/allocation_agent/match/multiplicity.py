@@ -57,10 +57,10 @@ class AccountPrior:
     global_mult_rate: float
 
     @classmethod
-    def fit(cls, accounts, amounts, is_mult) -> "AccountPrior":
+    def fit(cls, accounts, amounts, is_mult) -> AccountPrior:
         med: dict[str, list[float]] = {}
         rate: dict[str, list[int]] = {}
-        for a, amt, m in zip(accounts, amounts, is_mult):
+        for a, amt, m in zip(accounts, amounts, is_mult, strict=False):
             med.setdefault(a, []).append(abs(float(amt)))
             rate.setdefault(a, []).append(int(m))
         return cls(
@@ -109,7 +109,7 @@ class MultiplicityDetector:
         self.random_state = random_state
         self._model = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "MultiplicityDetector":
+    def fit(self, X: np.ndarray, y: np.ndarray) -> MultiplicityDetector:
         from lightgbm import LGBMClassifier
 
         pos = max(int(y.sum()), 1)
@@ -134,5 +134,5 @@ class MultiplicityDetector:
         if self._model is None:
             raise RuntimeError("MultiplicityDetector is not fitted")
         total = self._model.feature_importances_.sum() or 1
-        return dict(sorted(zip(MULT_FEATURE_NAMES, self._model.feature_importances_ / total),
+        return dict(sorted(zip(MULT_FEATURE_NAMES, self._model.feature_importances_ / total, strict=False),
                            key=lambda kv: -kv[1]))

@@ -3,7 +3,6 @@
 import pytest
 
 from allocation_agent.decide.gate import GateConfig
-from allocation_agent.match.blocker import BlockingConfig
 from allocation_agent.match.features import KeyStats
 from allocation_agent.pipeline import run_batch
 from allocation_agent.report.audit import AuditLog, RunConfig

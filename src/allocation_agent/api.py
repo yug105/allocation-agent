@@ -28,18 +28,21 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from allocation_agent.decide.gate import GateConfig, Outcome, decide
-from allocation_agent.decide.narrate import Narrator, diagnose_residual, diagnose_residual
-from allocation_agent.match.blocker import BlockingConfig, block
 from allocation_agent.adapters.csv_upload import (
-    UploadError, parse_bank_csv, parse_ledger_csv,
+    UploadError,
+    parse_bank_csv,
+    parse_ledger_csv,
 )
+from allocation_agent.decide.gate import GateConfig, Outcome, decide
+from allocation_agent.decide.narrate import Narrator, diagnose_residual
+from allocation_agent.match.blocker import BlockingConfig, block
 from allocation_agent.match.features import build_key_stats, featurise
 from allocation_agent.match.multiplicity import featurise_multiplicity
 from allocation_agent.match.solver import SolverConfig, SolverStatus, solve_subset
 from allocation_agent.report.audit import AuditLog, RunConfig
 from allocation_agent.stores.keys import KeyIndex, KeyRow
 from allocation_agent.types import BankRecord
+
 
 def _artifacts_dir() -> Path:
     """Locate the artifacts directory.
@@ -69,6 +72,11 @@ DIRECT_CONFIDENCE = 0.9898
 
 # Below this many records, report counts rather than rates.
 MIN_FOR_RATES = 20
+
+# Blocking is configured once. It was written in four places -- a local that
+# nothing read, two audit records, and the matcher itself -- so widening the
+# window would have silently disagreed with what the audit log claimed was used.
+BLOCKING = BlockingConfig(date_slack_days=7)
 
 # Measured, and owned here so exactly one place states it. Median of three warm
 # runs each: 2,000 records on an 8-core arm64 laptop, 500 on the deployed free
@@ -200,10 +208,9 @@ def create_app() -> FastAPI:
 
         records = state.records[: min(req.limit, len(state.records))]
         gate = GateConfig(review_all=req.review_all, policy_version="v0.1")
-        bcfg = BlockingConfig(date_slack_days=7)
 
         run_id = audit.start_run(RunConfig(
-            approved_by="demo", blocking={"date_slack_days": 7},
+            approved_by="demo", blocking={"date_slack_days": BLOCKING.date_slack_days},
             gate={"base": gate.base, "slope": gate.slope, "review_all": req.review_all},
             policy_version="v0.1", notes="held-out demo slice"))
 
@@ -462,7 +469,7 @@ def create_app() -> FastAPI:
         index, key_stats = KeyIndex(rows), build_key_stats(rows)
         gate = GateConfig(policy_version="v0.1")
         run_id = audit.start_run(RunConfig(
-            approved_by="uploader", blocking={"date_slack_days": 7},
+            approved_by="uploader", blocking={"date_slack_days": BLOCKING.date_slack_days},
             gate={"base": gate.base, "slope": gate.slope},
             policy_version="v0.1", notes=f"uploaded: {bank.filename} x {ledger.filename}"))
 
@@ -520,7 +527,7 @@ def _match_one(state: _State, rec: BankRecord, index, key_stats, gate,
     separate path for user data would make the demo's numbers evidence for
     nothing but the demo.
     """
-    cands = sorted(block(rec, index, BlockingConfig(date_slack_days=7)))
+    cands = sorted(block(rec, index, BLOCKING))
 
     if not cands:
         d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
@@ -676,5 +683,5 @@ def _page() -> str:
     """
     try:
         return _PAGE_PATH.read_text()
-    except OSError as exc:  # noqa: BLE001
+    except OSError as exc:
         return f"<pre>demo page missing: {exc}</pre>"

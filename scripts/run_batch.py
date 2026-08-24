@@ -1,7 +1,11 @@
 """End-to-end run on the held-out split, with the numbers that go in the README."""
 from __future__ import annotations
-import json, time
-import numpy as np, pandas as pd
+
+import json
+import time
+
+import numpy as np
+import pandas as pd
 
 from allocation_agent.adapters.benchrec import load_benchrec
 from allocation_agent.decide.gate import GateConfig
@@ -9,7 +13,10 @@ from allocation_agent.eval.splits import temporal_split
 from allocation_agent.match.blocker import BlockingConfig, block
 from allocation_agent.match.features import build_key_stats, featurise
 from allocation_agent.match.multiplicity import (
-    AccountPrior, MultiplicityDetector, featurise_multiplicity)
+    AccountPrior,
+    MultiplicityDetector,
+    featurise_multiplicity,
+)
 from allocation_agent.match.ranker import Ranker, RankerConfig
 from allocation_agent.pipeline import run_batch
 from allocation_agent.report.audit import AuditLog, RunConfig
@@ -31,9 +38,9 @@ print(f"split: {sp}\n")
 t = time.perf_counter()
 cands = [sorted(block(r, idx, BCFG)) for r in ds.records]
 has_exact = np.array([any(r.amount_minor in kamts.get(k, ()) for k in c)
-                      for r, c in zip(ds.records, cands)])
+                      for r, c in zip(ds.records, cands, strict=False)])
 mindelta = np.array([min((abs(r.amount_minor - a) for k in c for a in kamts.get(k, ())),
-                         default=1e12) for r, c in zip(ds.records, cands)], float)
+                         default=1e12) for r, c in zip(ds.records, cands, strict=False)], float)
 ncand = np.array([len(c) for c in cands])
 print(f"blocked in {time.perf_counter()-t:.1f}s  ({ds.n_records/(time.perf_counter()-t):,.0f} rec/s)")
 

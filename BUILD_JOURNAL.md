@@ -1513,3 +1513,62 @@ denominator, a cap justified by prose that skipped the row it turned on, a
 component constructed and never called, and now a limit that was only a
 suggestion. The fix each time was the same shape — move the thing being claimed
 to where it can be checked, then check it.
+
+---
+
+## Writing the rules down, then making something check them
+
+The repo had no `CLAUDE.md`, no linter in the loop, and no gate on committing.
+Every defect in the entries above was a claim enforced by nothing, so the
+correction is not another document — it is machinery.
+
+**`CLAUDE.md`** now carries the rules that were being re-derived every session,
+each with the failure that earned it: one owner per number, assert on exact
+strings rather than substrings, sample by position never by outcome, report
+coverage and precision separately, refuse rather than guess.
+
+**A pre-commit gate** runs the suite and blocks on failure (exit 2). Verified
+both ways before wiring: green tree passes, and a tree with one deliberately
+failing test is refused with the failure printed.
+
+**Ruff on every edited file**, with the rule set pinned in `pyproject.toml`.
+
+### The linter found two things 370 tests did not
+
+```
+api.py:32  F811  Redefinition of unused `diagnose_residual` from line 32
+api.py:203 F841  Local variable `bcfg` is assigned to but never used
+```
+
+The first is a sed replacement that ran twice — harmless. The second is not.
+`bcfg = BlockingConfig(date_slack_days=7)` was built in the demo endpoint and
+never read, because extracting `_match_one` moved blocking inside it. So
+`date_slack_days` was written in **four** places: a dead local, two audit
+records, and the matcher. Widening the window would have left the audit log
+claiming a value the run did not use — the same no-single-owner defect as the
+four throughput figures, sitting in the audit trail this time. There is now one
+`BLOCKING` constant and the audit records read from it.
+
+**F811 is the rule that catches a duplicate test definition** — the exact
+failure where `test_the_narrator_is_actually_invoked` existed twice and the
+shadowed copy, the one asserting real behaviour, never ran. It is now enforced
+by a linter rather than by a test I remembered to write afterwards.
+
+Ruff's last finding was the same species as `"not" in verdict`:
+
+```
+test_narrate.py:70  RUF043  Pattern passed to `match=` contains metacharacters
+```
+
+`pytest.raises(NarrationError, match="7.50")` treats `.` as a wildcard, so the
+test passes on `7X50`. An assertion looser than it looks, found by a tool rather
+than by reading. Now `match=r"7\.50"`.
+
+Baseline is zero ruff errors, so the hook has something meaningful to enforce; a
+linter that always prints 58 lines enforces nothing, because nobody reads it.
+
+**What I did not copy.** The setup this came from runs fourteen MCP servers and
+fourteen plugins. That guide's own advice is that context is precious and to
+keep under ten enabled — and none of those servers touch this problem. Two
+hooks, one rules file, one pinned lint config.
+

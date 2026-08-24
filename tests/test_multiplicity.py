@@ -4,7 +4,10 @@ import numpy as np
 import pytest
 
 from allocation_agent.match.multiplicity import (
-    MULT_FEATURE_NAMES, AccountPrior, MultiplicityDetector, featurise_multiplicity,
+    MULT_FEATURE_NAMES,
+    AccountPrior,
+    MultiplicityDetector,
+    featurise_multiplicity,
 )
 from allocation_agent.types import BankRecord
 
@@ -20,7 +23,7 @@ def rec(minor=200, acct="A") -> BankRecord:
 def f(**kw):
     base = dict(n_candidates=5, has_exact=True, min_delta_minor=0.0, prior=prior())
     base.update(kw)
-    return dict(zip(MULT_FEATURE_NAMES, featurise_multiplicity(rec(), **base)))
+    return dict(zip(MULT_FEATURE_NAMES, featurise_multiplicity(rec(), **base), strict=False))
 
 
 def test_vector_length_matches_names():
@@ -40,7 +43,7 @@ def test_account_prior_is_used_when_the_account_is_known():
 def test_unknown_account_falls_back_to_the_global_rate_not_zero():
     v = featurise_multiplicity(rec(acct="NEVER_SEEN"), n_candidates=1, has_exact=True,
                                min_delta_minor=0, prior=prior())
-    assert dict(zip(MULT_FEATURE_NAMES, v))["account_mult_rate"] == pytest.approx(0.25)
+    assert dict(zip(MULT_FEATURE_NAMES, v, strict=False))["account_mult_rate"] == pytest.approx(0.25)
 
 
 def test_features_are_finite_for_degenerate_input():

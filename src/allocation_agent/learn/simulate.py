@@ -147,7 +147,7 @@ def simulate(
         loci: dict[str, int] = {}
         posted_correct = 0
 
-        for row, d in zip(chunk, decisions):
+        for row, d in zip(chunk, decisions, strict=False):
             correct_keys, truly_multiple = truth(row)
             all_keys.extend(correct_keys)
 

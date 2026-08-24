@@ -1,7 +1,11 @@
 """Exactly what data goes where. Provenance, splits, and the loss funnel."""
 from __future__ import annotations
-import hashlib, os
-import numpy as np, pandas as pd
+
+import hashlib
+import os
+
+import numpy as np
+import pandas as pd
 
 from allocation_agent.adapters.benchrec import load_benchrec
 from allocation_agent.eval.splits import temporal_split
@@ -18,9 +22,9 @@ raw = pd.read_csv(PATH, dtype=str, low_memory=False)
 print(f"  file          {PATH}")
 print(f"  size          {size/1e6:.1f} MB    sha256 {h}...")
 print(f"  raw rows      {len(raw):,}   columns {len(raw.columns)}")
-print(f"  source        BenchRec (ICAIF 2023) - obfuscated ledger+bank records,")
-print(f"                Tier-1 institution production reconciliation")
-print(f"  labels        real analyst decisions (targetAllocation)")
+print("  source        BenchRec (ICAIF 2023) - obfuscated ledger+bank records,")
+print("                Tier-1 institution production reconciliation")
+print("  labels        real analyst decisions (targetAllocation)")
 dt = pd.to_datetime(raw.A_valueDate, format='%m/%d/%y', errors='coerce')
 print(f"  date range    {dt.min():%Y-%m-%d} to {dt.max():%Y-%m-%d}")
 
@@ -71,7 +75,7 @@ print(f"""  ranker (LightGBM LambdaRank)
                  NOT an additional held-out evaluation.""")
 
 print("="*78); print("5. THE LOSS FUNNEL  (where records stop being resolvable)"); print("="*78)
-single = [(i,l) for i,(l,m) in enumerate(zip(ds.labels, ds.is_mult)) if not m]
+single = [(i,l) for i,(l,m) in enumerate(zip(ds.labels, ds.is_mult, strict=False)) if not m]
 n_single = len(single)
 no_cand = miss = 0
 for i, lab in single:

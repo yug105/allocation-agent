@@ -34,7 +34,7 @@ class KeyRow:
 class KeyIndex:
     """Inverted indexes over ``(account, amount)`` and ``(account, day)``."""
 
-    __slots__ = ("by_amount", "by_day", "_keys")
+    __slots__ = ("_keys", "by_amount", "by_day")
 
     def __init__(self, rows: Iterable[KeyRow]) -> None:
         self.by_amount: dict[tuple[str, int], set[str]] = defaultdict(set)

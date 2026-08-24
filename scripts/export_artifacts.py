@@ -4,15 +4,24 @@ The deployed service must not carry the 58 MB source file or retrain on boot.
 It gets a fitted model, a key index, and a small demo slice.
 """
 from __future__ import annotations
-import json, pickle, time
+
+import json
+import pickle
+import time
 from pathlib import Path
-import numpy as np, pandas as pd
+
+import numpy as np
+import pandas as pd
 
 from allocation_agent.adapters.benchrec import load_benchrec
 from allocation_agent.eval.splits import temporal_split
 from allocation_agent.match.blocker import BlockingConfig, block
 from allocation_agent.match.features import build_key_stats, featurise
-from allocation_agent.match.multiplicity import AccountPrior, MultiplicityDetector, featurise_multiplicity
+from allocation_agent.match.multiplicity import (
+    AccountPrior,
+    MultiplicityDetector,
+    featurise_multiplicity,
+)
 from allocation_agent.match.ranker import Ranker, RankerConfig
 from allocation_agent.stores.keys import KeyIndex
 
@@ -71,7 +80,7 @@ demo = {
 pickle.dump({"ranker": ranker, "detector": det, "prior": prior}, open(OUT/"models.pkl","wb"))
 
 meta = {"n_demo_records": len(demo_ix), "n_demo_keys": len(needed),
-        "trained_on": int(len(sp.train)), "source": "BenchRec (ICAIF 2023)",
+        "trained_on": len(sp.train), "source": "BenchRec (ICAIF 2023)",
         "note": "held-out temporal split; these records were never seen in training"}
 (OUT/"meta.json").write_text(json.dumps(meta, indent=2))
 for f in OUT.iterdir(): print(f"  {f.name:16} {f.stat().st_size/1e6:6.2f} MB")

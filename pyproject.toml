@@ -34,3 +34,27 @@ markers = ["slow: needs the full 58MB dataset"]
 
 [tool.ruff]
 line-length = 100
+
+target-version = "py311"
+
+[tool.ruff.lint]
+# Beyond the defaults, the rules that would have caught real defects here.
+# F811 (redefined name) is how a duplicate test definition shadowed the first,
+# so it never ran and never failed. F841 (dead local) is how a blocking config
+# was built in one place and quietly ignored in another.
+extend-select = ["I", "B", "SIM", "UP", "DTZ", "RUF", "C4", "PIE"]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # en dashes are deliberate in prose and docstrings
+    "RUF059",                      # unused unpacked variable reads clearer than _
+    "B008",                        # File()/Depends() in a default is the FastAPI idiom
+    "SIM115",                      # one-shot scripts open files without a context manager
+    "DTZ007",                      # naive strptime is correct for a date-only column
+    "B017",                        # a test asserting the broad type is deliberate there
+    "RUF005",                      # list concatenation reads fine here
+    "SIM108",                      # an if/else block beats a ternary at this width
+    "ISC004",                      # multi-line f-strings in a tuple are deliberate
+    "UP042",                       # str+Enum is deliberate: the value serialises to JSON
+    "C408",                        # dict() with keywords is clearer than a literal here
+    "BLE001",                      # the blind catches are documented degradation paths
+    "PLR0402", "UP037", "F541", "PIE810", "RUF007", "RUF023", "RUF100", "UP017",
+]

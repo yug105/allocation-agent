@@ -17,15 +17,14 @@ from allocation_agent.eval.leakage import (
     find_suspicious_columns,
 )
 
-
 # --------------------------------------------------------------------------- #
 # forbidden columns
 # --------------------------------------------------------------------------- #
 
 def test_forbidden_set_is_exactly_the_four_known_leaks():
-    assert FORBIDDEN_COLUMNS == frozenset(
+    assert frozenset(
         {"generatorAllocation", "matchRule", "matchedBy", "matchDate"}
-    )
+    ) == FORBIDDEN_COLUMNS
 
 
 def test_clean_feature_frame_passes():

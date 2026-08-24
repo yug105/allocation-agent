@@ -18,7 +18,7 @@ its place on explainability. If something must be cut for time, cut this first.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 

@@ -4,15 +4,21 @@
 Baseline is the obvious rule; the model must beat it or be dropped.
 """
 from __future__ import annotations
+
 import time
-import numpy as np, pandas as pd
+
+import numpy as np
+import pandas as pd
 from sklearn.metrics import average_precision_score, precision_recall_fscore_support
 
 from allocation_agent.adapters.benchrec import load_benchrec
 from allocation_agent.eval.splits import temporal_split
 from allocation_agent.match.blocker import BlockingConfig, block
 from allocation_agent.match.multiplicity import (
-    AccountPrior, MultiplicityDetector, MULT_FEATURE_NAMES, featurise_multiplicity)
+    AccountPrior,
+    MultiplicityDetector,
+    featurise_multiplicity,
+)
 from allocation_agent.stores.keys import KeyIndex
 
 CFG = BlockingConfig(date_slack_days=7)

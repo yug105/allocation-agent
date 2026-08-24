@@ -10,7 +10,7 @@ Every product on the market uses one threshold for every amount.
 
 import pytest
 
-from allocation_agent.decide.gate import GateConfig, GateDecision, Outcome, decide
+from allocation_agent.decide.gate import GateConfig, Outcome, decide
 
 
 def cfg(**kw) -> GateConfig:

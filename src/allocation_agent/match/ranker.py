@@ -11,7 +11,7 @@ enough to post, and that is deterministic.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -43,7 +43,7 @@ class Ranker:
         self._calibrator = None
         self._ranking = False
 
-    def fit(self, X, y, X_cal=None, y_cal=None, group=None, group_cal=None) -> "Ranker":
+    def fit(self, X, y, X_cal=None, y_cal=None, group=None, group_cal=None) -> Ranker:
         """Fit the scorer.
 
         Args:
@@ -108,7 +108,7 @@ class Ranker:
         total = self._model.feature_importances_.sum() or 1
         return dict(
             sorted(
-                zip(FEATURE_NAMES, self._model.feature_importances_ / total),
+                zip(FEATURE_NAMES, self._model.feature_importances_ / total, strict=False),
                 key=lambda kv: -kv[1],
             )
         )

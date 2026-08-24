@@ -107,7 +107,7 @@ def load_benchrec(df: pd.DataFrame, *, strict: bool = False) -> Dataset:
     match_ids: list[str] = []
     mult: list[bool] = []
 
-    get = lambda row, col: row[col] if col in row and pd.notna(row[col]) else None  # noqa: E731
+    get = lambda row, col: row[col] if col in row and pd.notna(row[col]) else None
 
     for i, row in enumerate(df.to_dict("records")):
         try:

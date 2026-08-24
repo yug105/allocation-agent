@@ -116,10 +116,10 @@ def test_artifacts_directory_is_overridable(monkeypatch, tmp_path):
     import importlib
 
     monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path))
-    import allocation_agent.api as api
+    from allocation_agent import api
 
     importlib.reload(api)
-    assert api.ARTIFACTS == tmp_path
+    assert tmp_path == api.ARTIFACTS
     monkeypatch.delenv("ARTIFACTS_DIR")
     importlib.reload(api)
 
@@ -130,7 +130,7 @@ def test_missing_artifacts_degrade_to_503_rather_than_crashing_at_import(monkeyp
     import importlib
 
     monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path / "nope"))
-    import allocation_agent.api as api
+    from allocation_agent import api
 
     importlib.reload(api)
     c = TestClient(api.create_app())
@@ -149,7 +149,7 @@ def test_a_corrupt_model_file_does_not_kill_the_process(monkeypatch, tmp_path):
     (tmp_path / "demo.json").write_text('{"records": [], "key_rows": []}')
     (tmp_path / "models.pkl").write_bytes(b"not a pickle")
     monkeypatch.setenv("ARTIFACTS_DIR", str(tmp_path))
-    import allocation_agent.api as api
+    from allocation_agent import api
 
     importlib.reload(api)
     c = TestClient(api.create_app())          # must not raise
@@ -712,7 +712,7 @@ def test_the_sample_is_evenly_spaced_and_says_so(client):
     body = client.post("/api/settlements", json={"limit": 5}).json()
     assert body["sampling"] == "evenly spaced"
     numbers = sorted(int(r["settlement_id"].split("-")[-1]) for r in body["results"])
-    gaps = [b - a for a, b in zip(numbers, numbers[1:])]
+    gaps = [b - a for a, b in zip(numbers, numbers[1:], strict=False)]
     assert max(gaps) - min(gaps) <= 1, f"uneven spacing: {gaps}"
 
 

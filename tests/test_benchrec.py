@@ -17,7 +17,6 @@ from allocation_agent.adapters.benchrec import (
 from allocation_agent.eval.blocking_recall import measure_blocking
 from allocation_agent.match.blocker import BlockingConfig
 
-
 # --------------------------------------------------------------------------- #
 # money -> integer minor units
 # --------------------------------------------------------------------------- #

@@ -13,7 +13,6 @@ accuracy, a rule proposal for permanence.
 """
 
 import numpy as np
-import pytest
 
 from allocation_agent.learn.casebase import Case, CaseBase
 from allocation_agent.learn.router import FailureLocus, diagnose
