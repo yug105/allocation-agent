@@ -1572,3 +1572,74 @@ fourteen plugins. That guide's own advice is that context is precious and to
 keep under ten enabled — and none of those servers touch this problem. Two
 hooks, one rules file, one pinned lint config.
 
+
+---
+
+## Researching what a reconciliation product actually shows, and what I built instead
+
+Two searches, and they indicted the same thing from opposite directions.
+
+On demo pages: judges scan above the fold for about thirty seconds and form an
+opinion that rarely changes. My hero was a title, a paragraph and three dataset
+counts — **nothing had happened, and nothing could until a button was pressed.**
+
+On reconciliation products: every one of them measures **unreconciled value**,
+**value at risk** and **exception aging**, with queues ordered by amount and
+each item tagged by failure reason. Every figure on my page was a record count.
+"1,535 records" is a statistic. "15.6M sitting in review" is a reason to care.
+
+### The number the page was hiding from itself
+
+Running all 4,000 held-out records and summing by value rather than counting:
+
+```
+posted automatically      76,469,898.05    79.4% of records, 99.3% of them right
+needs a person            17,904,105.92    19.0% of the value
+  suspected_grouped   526 items  15,581,523.14
+  queued              298 items   2,322,582.78
+```
+
+**87% of the money needing a human is the grouped case** — the one this bank's
+own rules engine resolved 0% of. That is the entire argument for the project,
+in one figure, and the page had never said it.
+
+It is precomputed at export time rather than at startup: 4,000 records take
+~90s on the deployed free instance and the health check would fail before the
+container was ready. A test pins it against a live run, because a cached figure
+that drifts from what the buttons produce is worse than no figure.
+
+Summing it caught one more thing. `exceptions` is capped at 100 for payload
+size, and my first pass computed the queue total from that list — describing a
+quarter of the queue as the whole of it. Totals now sum over every exception,
+with a test asserting the reported total exceeds what the payload returns.
+
+### The KPI I researched, measured, and did not build
+
+Exception aging is on every product's list, so I went to add it. Measured
+first:
+
+```
+age bucket   records   auto-posted   needs a human
+  0-6  days      802         74.9%           25.1%
+  7-13 days     1071         80.2%           19.8%
+ 14-20 days     1056         81.3%           18.7%
+ 21-27 days     1071         80.0%           20.0%
+
+median age, auto-posted   14 days
+median age, needs a human 11 days
+```
+
+Flat. The held-out set spans **27 days**, so every record lands in one 30-day
+bucket and the standard chart would be a single bar.
+
+The reason is not a data quirk, it is a category error: **aging counts how long
+an item has sat unresolved in a running book**, and this is a one-month
+snapshot resolved in a single batch. There is nothing to age.
+
+A real uploaded ledger spanning months is a different matter, so it is computed
+when the span supports it and refused with the reason when it does not — the
+same rule as `rates_meaningful` and the evenly-spaced sampling. On the demo the
+page says why there is no chart; on a year-long upload it draws one.
+
+Adding the chart anyway would have looked more like a finance product and been
+worth nothing, which is the failure mode this whole journal is about.

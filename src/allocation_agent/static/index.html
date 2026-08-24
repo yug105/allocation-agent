@@ -278,6 +278,26 @@ function showEstimate(){
     secs < 1.5 ? '' : 's'}</b> — ${how}.${cold}`;
 }
 
+
+// Unresolved value by how long it has been waiting. Rendered only when the
+// data spans enough time to have an answer -- the demo set is 27 days, so it
+// shows the reason instead of a chart with one bar in it.
+function aging(a){
+  if(!a) return '';
+  if(!a.meaningful) return `<h3>Exception aging</h3>
+    <p class=note style="border-color:var(--warn)">${esc(a.note)}</p>`;
+  const max = Math.max(...a.buckets.map(b=>b.value), 1);
+  return `<h3>Exception aging</h3>
+  <p class=faint style="margin:0 0 .5rem">Unresolved value by age, oldest at the
+  bottom. ${esc(a.note)}</p>
+  <table><tr><th>age</th><th class=num>items</th><th class=num>value</th><th></th></tr>
+  ${a.buckets.map(b=>`<tr><td>${esc(b.label)}</td><td class=num>${fmt(b.count)}</td>
+    <td class=num>${money(b.value)}</td>
+    <td style="width:45%"><div class=bar style="margin:.35rem 0">
+      <i style="width:${b.value/max*100}%;background:var(--warn)"></i></div></td></tr>`).join('')}
+  </table>`;
+}
+
 function tab(n){
   [1,2,3].forEach(i=>{
     $('#t'+i).setAttribute('aria-selected', i===n);
@@ -412,6 +432,7 @@ function renderRun(d){
       <td class=num>${fmt(v)}</td><td class=dim>${w.d}</td></tr>`;}).join('')}
   </table>
 
+  ${aging(d.aging)}
   <h3 style="font-size:.95rem;margin:1.4rem 0 .2rem">The ${fmt(d.n_exceptions)} a person would see</h3>
   <p class=faint style="margin:0 0 .4rem">Ordered by value at risk, biggest first —
   which is how a queue is actually worked. Each says why it stopped, so the reviewer
@@ -557,6 +578,7 @@ function renderUpload(d){
     <div class=c><div class="n r">${fmt(s.no_candidate)}</div><div class=l>nothing to match</div></div>
   </div>
   <p class=note>${esc(d.caveat)}</p>
+  ${aging(d.aging)}
   <p class=faint>Dates read as <b>${esc(d.date_layout.bank)}</b> in the bank file and
   <b>${esc(d.date_layout.ledger)}</b> in the ledger. A date like 03/01/2026 can be read
   two ways; one is chosen for the whole file, so check this is the one you meant.</p>

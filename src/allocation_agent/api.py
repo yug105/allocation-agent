@@ -85,6 +85,15 @@ BLOCKING = BlockingConfig(date_slack_days=7)
 # difference is 68.4% precision against 57.6%.
 MULT_THRESHOLD = 0.7
 
+# An aging report needs a book that spans time. Measured on the held-out set:
+# it covers 27 days, every record lands in one 30-day bucket, and the auto-post
+# rate across weekly buckets is 74.9 / 80.2 / 81.3 / 80.0 -- flat. Aging counts
+# how long an item has sat unresolved in a *running* system; a one-month
+# snapshot resolved in a single batch has nothing to measure. An uploaded
+# ledger spanning months does, so it is computed there and refused here.
+MIN_SPAN_FOR_AGING_DAYS = 60
+AGING_BUCKETS = ((0, 30), (30, 60), (60, 90), (90, None))
+
 # Measured, and owned here so exactly one place states it. Median of three warm
 # runs each: 2,000 records on an 8-core arm64 laptop, 500 on the deployed free
 # instance. Four different figures were live at once before this constant
@@ -242,6 +251,7 @@ def create_app() -> FastAPI:
         # Value, not only counts. A reconciliation queue is worked by amount at
         # risk, so the money is the reportable figure and the count is context.
         value = dict.fromkeys(summary, 0.0)
+        unresolved: list[tuple[int, float]] = []
         exceptions: list[dict] = []
         posted_correct = 0
         started = time.perf_counter()
@@ -257,6 +267,8 @@ def create_app() -> FastAPI:
                          evidence=r["evidence"])
             summary[r["outcome"]] += 1
             value[r["outcome"]] += abs(rec.amount_minor) / 100
+            if r["outcome"] != "posted" and rec.day is not None:
+                unresolved.append((rec.day, abs(rec.amount_minor) / 100))
 
             if r["outcome"] == "posted":
                 posted_correct += (not truly_mult and r["keys"][0] == truth_key)
@@ -289,6 +301,7 @@ def create_app() -> FastAPI:
             # a total taken from the truncated list describes a fraction of it.
             "queue_value": round(sum(v for k, v in value.items() if k != "posted"), 2),
             "value_by_outcome": {k: round(v, 2) for k, v in value.items()},
+            "aging": _aging(unresolved, _span([r.day for r in records])),
             "exceptions": exceptions[:100],
             "n_exceptions": len(exceptions),
         }
@@ -511,6 +524,7 @@ def create_app() -> FastAPI:
             policy_version="v0.1", notes=f"uploaded: {bank.filename} x {ledger.filename}"))
 
         summary = {"posted": 0, "queued": 0, "no_candidate": 0, "suspected_grouped": 0}
+        unresolved: list[tuple[int, float]] = []
         results = []
         started = time.perf_counter()
 
@@ -520,6 +534,8 @@ def create_app() -> FastAPI:
                          n_candidates=r["n_candidates"], path=r["path"],
                          evidence=r["evidence"])
             summary[r["outcome"]] += 1
+            if r["outcome"] != "posted" and rec.day is not None:
+                unresolved.append((rec.day, abs(rec.amount_minor) / 100))
             results.append({
                 "record_id": rec.record_id,
                 "account": rec.account,
@@ -545,6 +561,7 @@ def create_app() -> FastAPI:
             # reading is chosen for the whole file; saying which is the only way
             # the person who wrote it can catch a wrong guess.
             "date_layout": {"bank": bank_layout, "ledger": ledger_layout},
+            "aging": _aging(unresolved, _span([r.day for r in records])),
             "caveat": "Your file has no ground truth, so no precision is reported — "
                       "any accuracy number here would be invented. Check the matches "
                       "against what you already know about this data.",
@@ -683,6 +700,42 @@ def _match_one(state: _State, rec: BankRecord, index, key_stats, gate,
             "residual_minor": residual_minor, "outcome": "posted" if d.outcome is Outcome.POST else "queued",
             "decision": d, "keys": [chosen], "n_candidates": len(usable), "path": path,
             "evidence": evidence, "confidence": confidence, "explanation": expl}
+
+
+def _span(days: list[int | None]) -> int:
+    known = [d for d in days if d is not None]
+    return max(known) - min(known) if known else 0
+
+
+def _aging(unresolved: list[tuple[int, float]], span: int) -> dict:
+    """Unresolved value by how long it has been waiting.
+
+    *unresolved* is (day, amount) for records that did **not** reconcile --
+    aging something already matched is meaningless, it is not waiting for
+    anyone.
+    """
+    if span < MIN_SPAN_FOR_AGING_DAYS:
+        return {
+            "meaningful": False, "span_days": span, "buckets": [],
+            "note": (f"This data covers {span} days, so every item falls in one "
+                     f"bucket. Aging measures how long something has sat "
+                     f"unresolved in a running book; a snapshot this short has "
+                     f"nothing to age. Shown for a ledger spanning "
+                     f"{MIN_SPAN_FOR_AGING_DAYS}+ days."),
+        }
+
+    latest = max((d for d, _ in unresolved), default=0)
+    buckets = []
+    for lo, hi in AGING_BUCKETS:
+        chosen = [(d, a) for d, a in unresolved
+                  if lo <= latest - d and (hi is None or latest - d < hi)]
+        buckets.append({
+            "label": f"{lo}-{hi} days" if hi else f"{lo}+ days",
+            "count": len(chosen),
+            "value": round(sum(a for _, a in chosen), 2),
+        })
+    return {"meaningful": True, "span_days": span, "buckets": buckets,
+            "note": "Measured from the most recent entry in the file."}
 
 
 def _p_multiple_with(state: _State, rec: BankRecord, cands: list[str], key_stats) -> float:

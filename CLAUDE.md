@@ -75,6 +75,12 @@ than picking. Ties and oversized pools are refused, not guessed.
 must agree with a live run — a test pins that — because a cached figure that
 drifts from what the buttons produce is worse than no figure.
 
+**Aging is conditional.** `_aging()` refuses below a 60-day span and says why.
+Measured on the held-out set: it covers 27 days and the auto-post rate across
+weekly buckets is 74.9 / 80.2 / 81.3 / 80.0 — flat. Aging counts how long an
+item has sat unresolved in a *running* book; a one-month snapshot resolved in a
+single batch has nothing to age. Uploaded ledgers spanning months do.
+
 **Report value, not only counts.** Reconciliation is worked by amount at risk,
 so every figure has a money form and the queue is ordered biggest-first. Totals
 are summed over *all* exceptions, never over the 100 the API returns. BenchRec

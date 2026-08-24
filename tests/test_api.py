@@ -980,3 +980,59 @@ def test_the_reported_exception_total_covers_every_exception_not_the_first_page(
     body = client.post("/api/run", json={"limit": 2000}).json()
     assert body["n_exceptions"] > len(body["exceptions"])
     assert body["queue_value"] > sum(abs(e["amount"]) for e in body["exceptions"])
+
+
+# --------------------------------------------------------------------------- #
+# Exception aging.
+#
+# Every reconciliation product reports unreconciled balance by age, so the
+# obvious move was to add it. Measured first: the held-out set spans 27 days,
+# every record falls in one 30-day bucket, and the auto-post rate across weekly
+# buckets is 74.9 / 80.2 / 81.3 / 80.0 -- flat. Median age is 14 days for
+# posted against 11 for queued.
+#
+# Age carries no signal here because aging measures how long an item has sat
+# unresolved in a *running* system, and this is a 27-day snapshot resolved in
+# one batch. A real uploaded ledger spanning months is a different matter. So
+# it is computed when the span supports it and refused with a reason when it
+# does not -- the same rule as rates_meaningful.
+# --------------------------------------------------------------------------- #
+
+def test_aging_is_withheld_when_the_data_is_too_short_a_window(client):
+    body = client.post("/api/run", json={"limit": 500}).json()
+    assert body["aging"]["meaningful"] is False
+    assert body["aging"]["span_days"] < 60
+    assert "snapshot" in body["aging"]["note"].lower() or "window" in body["aging"]["note"].lower()
+
+
+def test_aging_is_reported_when_an_uploaded_ledger_spans_months(client):
+    bank = "id,account,amount,date\n" + "".join(
+        f"B{i},A-1,{100 + i}.00,2026-{m:02d}-05\n"
+        for i, m in enumerate([1, 2, 3, 5, 7, 9, 11]))
+    ledger = "invoice,account,amount,date\nINV-1,A-1,9999.00,2026-01-05\n"
+    body = client.post("/api/reconcile", files=_pair(bank, ledger)).json()
+    assert body["aging"]["meaningful"] is True
+    assert body["aging"]["span_days"] > 60
+    assert body["aging"]["buckets"], "no buckets returned"
+
+
+def test_aging_buckets_carry_value_not_only_counts(client):
+    bank = "id,account,amount,date\n" + "".join(
+        f"B{i},A-9,{1000 * (i + 1)}.00,2026-{m:02d}-05\n"
+        for i, m in enumerate([1, 3, 6, 9, 12]))
+    ledger = "invoice,account,amount,date\nINV-1,A-1,5.00,2026-01-05\n"
+    body = client.post("/api/reconcile", files=_pair(bank, ledger)).json()
+    for b in body["aging"]["buckets"]:
+        assert {"label", "count", "value"} <= set(b)
+    assert sum(b["value"] for b in body["aging"]["buckets"]) > 0
+
+
+def test_only_unresolved_records_are_aged(client):
+    """Aging an item that was reconciled is meaningless -- it is not waiting."""
+    bank = "id,account,amount,date\n" + "".join(
+        f"B{i},A-1,{100 + i}.00,2026-{m:02d}-05\n" for i, m in enumerate([1, 4, 8, 12]))
+    ledger = "invoice,account,amount,date\nINV-1,A-1,9999.00,2026-01-05\n"
+    body = client.post("/api/reconcile", files=_pair(bank, ledger)).json()
+    aged = sum(b["count"] for b in body["aging"]["buckets"])
+    s = body["summary"]
+    assert aged == s["queued"] + s["suspected_grouped"] + s["no_candidate"]
