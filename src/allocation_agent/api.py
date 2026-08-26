@@ -32,7 +32,7 @@ from allocation_agent.adapters.csv_upload import (
     parse_bank_csv,
     parse_ledger_csv,
 )
-from allocation_agent.decide.gate import GateConfig
+from allocation_agent.decide.gate import GateConfig, decide
 from allocation_agent.decide.narrate import Narrator
 from allocation_agent.match.blocker import BlockingConfig
 from allocation_agent.match.engine import MULT_THRESHOLD, Models, match_one
@@ -65,6 +65,9 @@ ARTIFACTS = _artifacts_dir()
 REQUIRED_COLUMNS = {"account", "amount", "date"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_UPLOAD_ROWS = 20_000
+# A ledger is legitimately larger than a bank file, but KeyIndex and
+# build_key_stats are built from it on every request, so it needs its own cap.
+MAX_LEDGER_ROWS = 100_000
 
 # Measured on the held-out set, not asserted: see _match_one.
 
@@ -110,8 +113,6 @@ class SettlementRequest(BaseModel):
     max_pool: int = Field(default=128, ge=2, le=512)
 
 
-class ConnectRequest(BaseModel):
-    key_id: str
 
 
 class _State:
@@ -249,7 +250,8 @@ def create_app() -> FastAPI:
             gate={"base": gate.base, "slope": gate.slope, "review_all": req.review_all},
             policy_version="v0.1", notes="held-out demo slice"))
 
-        summary = {"posted": 0, "queued": 0, "no_candidate": 0, "suspected_grouped": 0}
+        summary = {"posted": 0, "queued": 0, "no_candidate": 0,
+                   "suspected_grouped": 0, "unscorable": 0, "model_error": 0}
         # Value, not only counts. A reconciliation queue is worked by amount at
         # risk, so the money is the reportable figure and the count is context.
         value = dict.fromkeys(summary, 0.0)
@@ -267,10 +269,11 @@ def create_app() -> FastAPI:
             truth_key, truly_mult = state.truth.get(rec.record_id, ("", False))
             # Same function the upload path calls. One matching path, so the
             # measured demo numbers say something about uploaded files too.
-            r = match_one(rec, index=state.index, key_stats=state.key_stats,
-                          models=state.models, gate=gate,
-                          mult_threshold=req.mult_threshold, blocking=BLOCKING,
-                          narrator=narrator)
+            r = _match_or_degrade(rec, index=state.index, key_stats=state.key_stats,
+                                  models=state.models, gate=gate,
+                                  mult_threshold=req.mult_threshold,
+                                  blocking=BLOCKING, narrator=narrator,
+                                  calibrated=True)
             audit.record(rec.record_id, r["decision"], keys=r["keys"],
                          n_candidates=r["n_candidates"], path=r["path"],
                          evidence=r["evidence"])
@@ -288,7 +291,8 @@ def create_app() -> FastAPI:
                                    "residual": round(r["residual_minor"] / 100, 2),
                                    "residual_cause": r["residual_cause"]})
 
-        audit.commit(); audit.finish_run(run_id)
+        audit.commit()
+        audit.finish_run(run_id)
         elapsed = time.perf_counter() - started
         # Biggest first: a controller works the queue top-down, and the ten
         # largest are about a tenth of its value. Record order wastes that.
@@ -532,6 +536,9 @@ def create_app() -> FastAPI:
         except UploadError as exc:
             raise HTTPException(400, str(exc)) from exc
 
+        if len(rows) > MAX_LEDGER_ROWS:
+            raise HTTPException(400, f"the ledger file has {len(rows):,} rows; "
+                                     f"this demo caps at {MAX_LEDGER_ROWS:,}")
         if len(records) > MAX_UPLOAD_ROWS:
             raise HTTPException(400, f"the bank file has {len(records)} rows; "
                                      f"this demo caps at {MAX_UPLOAD_ROWS}")
@@ -543,16 +550,21 @@ def create_app() -> FastAPI:
             gate={"base": gate.base, "slope": gate.slope},
             policy_version="v0.1", notes=f"uploaded: {bank.filename} x {ledger.filename}"))
 
-        summary = {"posted": 0, "queued": 0, "no_candidate": 0, "suspected_grouped": 0}
+        summary = {"posted": 0, "queued": 0, "no_candidate": 0,
+                   "suspected_grouped": 0, "unscorable": 0, "model_error": 0}
         unresolved: list[tuple[int, float]] = []
         llm_before = narrator.calls
         results = []
         started = time.perf_counter()
 
         for rec in records:
-            r = match_one(rec, index=index, key_stats=key_stats, models=state.models,
-                          gate=gate, mult_threshold=MULT_THRESHOLD,
-                          blocking=BLOCKING, narrator=narrator)
+            # calibrated=False: the calibrator and DIRECT_CONFIDENCE were both
+            # measured on BenchRec. Sharing a code path with this file does not
+            # transfer those measurements to it.
+            r = _match_or_degrade(rec, index=index, key_stats=key_stats,
+                                  models=state.models, gate=gate,
+                                  mult_threshold=MULT_THRESHOLD, blocking=BLOCKING,
+                                  narrator=narrator, calibrated=False)
             audit.record(rec.record_id, r["decision"], keys=r["keys"],
                          n_candidates=r["n_candidates"], path=r["path"],
                          evidence=r["evidence"])
@@ -585,6 +597,9 @@ def create_app() -> FastAPI:
             # the person who wrote it can catch a wrong guess.
             "date_layout": {"bank": bank_layout, "ledger": ledger_layout},
             "aging": _aging(unresolved, _span([r.day for r in records])),
+            # Every confidence on this response was derived from measurements
+            # taken on BenchRec. Sharing a code path does not transfer them.
+            "confidence_validated_for_this_data": False,
             "caveat": "Your file has no ground truth, so no precision is reported — "
                       "any accuracy number here would be invented. Check the matches "
                       "against what you already know about this data.",
@@ -595,6 +610,31 @@ def create_app() -> FastAPI:
 
 
 
+
+
+def _match_or_degrade(rec, *, index, key_stats, models, gate, mult_threshold,
+                      blocking, narrator, calibrated: bool) -> dict:
+    """match_one, but a model failure becomes an exception rather than a 500.
+
+    "The AI can fail, the payment system cannot" is the project's central
+    claim, and until now it was enforced in the batch runner and nowhere else:
+    a ranker or detector that raised took the whole HTTP request with it.
+    """
+    try:
+        return match_one(rec, index=index, key_stats=key_stats, models=models,
+                         gate=gate, mult_threshold=mult_threshold,
+                         blocking=blocking, narrator=narrator,
+                         calibrated_for_this_data=calibrated)
+    except Exception as exc:  # noqa: BLE001
+        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
+        return {"residual_cause": None, "residual_minor": 0, "stage": "model",
+                "outcome": "model_error", "decision": d, "keys": [],
+                "n_blocked": 0, "n_scored": 0, "n_candidates": 0,
+                "path": "model_error", "evidence": {"error": type(exc).__name__},
+                "confidence": None,
+                "explanation": (f"A model failed on this record "
+                                f"({type(exc).__name__}). Routed to a person "
+                                f"rather than guessed at.")}
 
 
 def _span(days: list[int | None]) -> int:

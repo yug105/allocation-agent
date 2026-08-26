@@ -1766,3 +1766,54 @@ that matters — 99.3% of what it posts is correct — is measured directly and 
 not depend on the name. But the gate's thresholds are tuned against a quantity
 whose units are arbitrary, and that should be Platt or isotonic on the
 validation split. Recorded rather than done.
+
+---
+
+## Fifteen more, one of which was mine and wrong
+
+**The one I got to check rather than fix.** The review's top item was that
+`predict_proba(X)[0]` reads a row, not a probability — sklearn returns
+`[[p0, p1]]`, so `float(...)` of that is a type error and the matching path
+would be broken outright. Verified before touching anything:
+`MultiplicityDetector.predict_proba` is a wrapper that already does `[:, 1]`,
+returns shape `(3,)`, and `float(out[0])` is `0.59`. A correct reading of the
+sklearn contract, applied to a class that is not sklearn.
+
+**The one that was a genuine conceptual error.** `DIRECT_CONFIDENCE = 0.9898`
+is BenchRec's measured rate, and `match_one` handed it to uploaded files too,
+on the strength of a comment reading *"same matching path, so the measured demo
+numbers say something about uploaded files too."* They do not. **Same code path
+is not the same data distribution** — an uploaded ledger can have duplicate
+amounts, a different date discipline, another account structure entirely.
+
+The first fix was worse than the problem: discount it to 0.60 on uncalibrated
+data. That made a lone exact amount rank *below* a wide ranker margin on the
+same file, when the exact amount is the stronger of the two. The inconsistency
+came from patching one path and not the other.
+
+What ships instead: the figure is used unchanged and **labelled**. Calibrated
+data records `benchrec_heldout`; anything else records
+`benchrec_heldout_unvalidated`, the calibrator is bypassed for
+`uncalibrated_sigmoid`, and the response carries
+`confidence_validated_for_this_data: false`. The number a caller sees now says
+where it came from.
+
+**Two claims that lived only in prose.** *"The AI can fail, the payment system
+cannot"* was enforced in the batch runner and nowhere else — a ranker that
+raised inside the API returned a 500 and took the request with it. And `usable
+== []` was reported as `no_candidate` when blocking had in fact found entries
+that could not be scored, which is a different failure. Both now have code and
+a test; `n_blocked` and `n_scored` are separate fields, because one name meant
+"blocked" on one path and "scored" on another.
+
+Also: the ledger had no row cap while `KeyIndex` and `build_key_stats` are
+rebuilt from it on every request, and `ConnectRequest` was dead code left over
+from an endpoint deleted days ago.
+
+### The closing point is the one worth keeping
+
+> Every strong architectural claim should have a corresponding test.
+
+That is the whole failure mode of this project stated in one line. The comments
+here have repeatedly been more confident than the code, and a reader trusts a
+comment. Six of this batch's tests exist only to make a sentence enforceable.

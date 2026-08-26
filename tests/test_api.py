@@ -1180,3 +1180,103 @@ def test_confidence_is_no_longer_the_sigmoid_of_the_margin(client):
             if d["path"] == "ranked" and d["confidence"] is not None]
     assert conf
     assert min(conf) < 0.5, "no record scored below 50% — still on the sigmoid scale"
+
+
+# --------------------------------------------------------------------------- #
+# Claims the comments made and the code did not enforce.
+#
+# "Every strong architectural claim should have a corresponding test" -- the
+# review's closing point, and the right one. These are the claims that were
+# load-bearing in prose and absent in code.
+# --------------------------------------------------------------------------- #
+
+def test_a_model_failure_does_not_take_the_request_with_it(client):
+    """'The AI can fail, the payment system cannot' was enforced in the batch
+    runner and nowhere else: a ranker that raised returned a 500."""
+    from allocation_agent.api import BLOCKING, MULT_THRESHOLD, _match_or_degrade, _State
+    from allocation_agent.decide.gate import GateConfig, Outcome
+    from allocation_agent.match.engine import Models
+
+    state = _State()
+    state.load()
+
+    class Exploding:
+        def score(self, X):
+            raise RuntimeError("model blew up")
+
+    broken = Models(Exploding(), state.detector, state.prior)
+    r = _match_or_degrade(state.records[0], index=state.index,
+                          key_stats=state.key_stats, models=broken,
+                          gate=GateConfig(), mult_threshold=MULT_THRESHOLD,
+                          blocking=BLOCKING, narrator=None, calibrated=True)
+    assert r["outcome"] == "model_error"
+    assert r["path"] == "model_error"
+    assert r["decision"].outcome is not Outcome.POST
+    assert "RuntimeError" in str(r["evidence"])
+
+
+def test_confidences_on_an_uploaded_file_are_marked_unvalidated(client):
+    """98.98% is BenchRec's measured rate. Sharing a code path with an upload
+    does not transfer it there."""
+    body = client.post("/api/reconcile", files=_pair(
+        "id,account,amount,date\nB1,A-1,80.50,2026-03-02\n",
+        "invoice,account,amount,date\nINV-1,A-1,80.50,2026-03-03\n")).json()
+    assert body["confidence_validated_for_this_data"] is False
+    trail = client.get(f"/api/run/{body['run_id']}/audit").json()
+    import json as _json
+    src = _json.loads(trail["decisions"][0]["evidence"])["confidence_from"]
+    assert src.endswith("_unvalidated"), f"upload claimed a validated source: {src}"
+
+
+def test_the_demo_confidences_are_marked_validated(client):
+    import json as _json
+    body = client.post("/api/run", json={"limit": 200}).json()
+    trail = client.get(f"/api/run/{body['run_id']}/audit").json()
+    sources = {_json.loads(d["evidence"])["confidence_from"]
+               for d in trail["decisions"] if d["evidence"] and "confidence_from" in d["evidence"]}
+    assert sources
+    assert not any(s.endswith("_unvalidated") for s in sources)
+
+
+def test_candidates_that_cannot_be_scored_are_not_called_no_candidate(client):
+    """Blocking finding entries that key_stats cannot score is a different
+    failure from finding nothing, and the breakdown has to say which."""
+    from allocation_agent.api import BLOCKING, MULT_THRESHOLD, _match_or_degrade, _State
+    from allocation_agent.decide.gate import GateConfig
+
+    state = _State()
+    state.load()
+    rec = next(r for r in state.records)
+    out = _match_or_degrade(rec, index=state.index, key_stats={},
+                            models=state.models, gate=GateConfig(),
+                            mult_threshold=MULT_THRESHOLD, blocking=BLOCKING,
+                            narrator=None, calibrated=True)
+    assert out["outcome"] == "unscorable"
+    assert out["n_blocked"] > 0, "blocking did find entries"
+    assert out["n_scored"] == 0
+
+
+def test_every_decision_reports_both_candidate_counts(client):
+    """n_candidates meant blocked on one path and scored on another."""
+    from allocation_agent.api import BLOCKING, MULT_THRESHOLD, _match_or_degrade, _State
+    from allocation_agent.decide.gate import GateConfig
+
+    state = _State()
+    state.load()
+    for rec in state.records[:200]:
+        r = _match_or_degrade(rec, index=state.index, key_stats=state.key_stats,
+                              models=state.models, gate=GateConfig(),
+                              mult_threshold=MULT_THRESHOLD, blocking=BLOCKING,
+                              narrator=None, calibrated=True)
+        assert r["n_scored"] <= r["n_blocked"]
+
+
+def test_an_oversized_ledger_is_refused(client):
+    """KeyIndex and build_key_stats run over the ledger on every request."""
+    from allocation_agent.api import MAX_LEDGER_ROWS
+    big = "invoice,account,amount,date\n" + "".join(
+        f"INV-{i},A-1,{i + 1}.00,2026-03-01\n" for i in range(MAX_LEDGER_ROWS + 1))
+    r = client.post("/api/reconcile", files=_pair(
+        "id,account,amount,date\nB1,A-1,1.00,2026-03-01\n", big))
+    assert r.status_code == 400
+    assert "ledger" in r.json()["detail"]

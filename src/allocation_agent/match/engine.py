@@ -26,9 +26,20 @@ from allocation_agent.match.features import featurise
 from allocation_agent.match.multiplicity import featurise_multiplicity
 from allocation_agent.types import BankRecord
 
-# Measured on the held-out set: where exactly one candidate matches the amount
-# exactly, it is the right answer 98.98% of the time (2,321 of 2,345).
+# Measured on the BenchRec held-out set: where exactly one candidate matches
+# the amount exactly, it is the right answer 98.98% of the time (2,321 of
+# 2,345). **That figure belongs to that dataset.** Sharing a code path with an
+# uploaded file does not transfer the measurement to it -- the upload may have
+# duplicate ledger amounts, a different date discipline, or another account
+# structure entirely. So it is only asserted as a probability where it was
+# measured, and elsewhere it is a heuristic that says so.
 DIRECT_CONFIDENCE = 0.9898
+
+# On data with no measurement behind it the figure is used unchanged but
+# *labelled*, and the response says no accuracy is claimed for that file. An
+# earlier attempt discounted it to 0.60, which was worse: it made a lone exact
+# amount rank below a wide ranker margin on the very same file, when the exact
+# amount is the stronger evidence of the two.
 
 # Where the grouping detector's probability becomes a routing decision.
 MULT_THRESHOLD = 0.7
@@ -47,7 +58,8 @@ class Models:
 
 def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
               mult_threshold: float, blocking: BlockingConfig,
-              narrator: Narrator | None = None) -> dict:
+              narrator: Narrator | None = None,
+              calibrated_for_this_data: bool = False) -> dict:
     """Run one record through the whole matching path.
 
     Extracted so an uploaded file goes through *identical* code to the demo. A
@@ -59,18 +71,25 @@ def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
     if not cands:
         d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
         return {"residual_cause": None, "residual_minor": 0, "stage": "narrowing", "outcome": "no_candidate", "decision": d,
-                "keys": [], "n_candidates": 0, "path": "blocked", "evidence": None,
+                "keys": [], "n_blocked": 0, "n_scored": 0, "n_candidates": 0,
+                "path": "blocked", "evidence": None,
                 "confidence": None,
                 "explanation": "Nothing in the ledger is close enough to consider — "
                                "no entry shares this account within a week of this date."}
 
     usable = [k for k in cands if k in key_stats]
     if not usable:
+        # Blocking found entries; none could be scored. Reporting that as
+        # "no candidate" makes the exception breakdown describe a different
+        # failure from the one that happened.
         d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
-        return {"residual_cause": None, "residual_minor": 0, "stage": "narrowing", "outcome": "no_candidate", "decision": d,
-                "keys": [], "n_candidates": 0, "path": "blocked", "evidence": None,
+        return {"residual_cause": None, "residual_minor": 0, "stage": "narrowing",
+                "outcome": "unscorable", "decision": d, "keys": [],
+                "n_blocked": len(cands), "n_scored": 0, "n_candidates": len(cands),
+                "path": "unscorable", "evidence": {"n_blocked": len(cands)},
                 "confidence": None,
-                "explanation": "Nothing in the ledger is close enough to consider."}
+                "explanation": (f"{len(cands)} nearby ledger entries were found, but none "
+                                f"carry the figures needed to score them. Sent for review.")}
 
     # A lone candidate whose amount is exactly this figure is direct evidence,
     # and it limits what the next two steps are entitled to do.
@@ -87,7 +106,7 @@ def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
     if p_mult >= mult_threshold and not lone_exact:
         d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
         return {"residual_cause": None, "residual_minor": 0, "stage": "grouping", "outcome": "suspected_grouped", "decision": d,
-                "keys": [], "n_candidates": len(cands), "path": "multiplicity",
+                "keys": [], "n_blocked": len(cands), "n_scored": len(usable), "n_candidates": len(cands), "path": "multiplicity",
                 "evidence": {"p_multiple": round(p_mult, 4)}, "confidence": None,
                 "explanation": f"This looks like one payment covering several ledger "
                                f"entries ({p_mult:.0%} confidence), so a single match "
@@ -105,13 +124,17 @@ def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
         # probability meaning and neither does a sigmoid of it. The calibrator
         # maps margin to the measured frequency of being right; without one,
         # fall back to the sigmoid and say so in the evidence.
-        if models.calibrator is not None:
+        if models.calibrator is not None and calibrated_for_this_data:
             confidence = float(np.clip(models.calibrator.predict([margin])[0], 0.0, 1.0))
+            source = models.calibrator_kind
         else:
+            # The calibrator maps a margin to a frequency measured on BenchRec.
+            # On other data that mapping is unvalidated, so the number is named
+            # for what it is rather than dressed as a probability.
             confidence = float(1.0 / (1.0 + np.exp(-margin)))
+            source = "uncalibrated_sigmoid"
         path = "ranked"
-        evidence = {"margin": round(margin, 4),
-                    "confidence_from": models.calibrator_kind}
+        evidence = {"margin": round(margin, 4), "confidence_from": source}
         # When a lone exact amount kept the grouping check from firing, the
         # trail has to say so. Without this the record is indistinguishable
         # from an ordinary match, and a reviewer cannot see that a
@@ -131,8 +154,11 @@ def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
         # where exactly one candidate matches the amount exactly it is the
         # right answer 98.98% of the time (2,321 of 2,345). That measured rate
         # is the confidence.
-        chosen, confidence = exact[0], DIRECT_CONFIDENCE
-        path, evidence = "direct", {"exact_amount": True}
+        chosen = exact[0]
+        confidence = DIRECT_CONFIDENCE
+        source = "benchrec_heldout" if calibrated_for_this_data else "benchrec_heldout_unvalidated"
+        path = "direct"
+        evidence = {"exact_amount": True, "confidence_from": source}
     else:
         # One candidate, and its amount is not this figure. Nothing supports it.
         confidence, path, evidence = None, "ranked", None
@@ -187,7 +213,8 @@ def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
     return {"stage": "ranking",
             "residual_cause": residual_cause,
             "residual_minor": residual_minor, "outcome": "posted" if d.outcome is Outcome.POST else "queued",
-            "decision": d, "keys": [chosen], "n_candidates": len(usable), "path": path,
+            "decision": d, "keys": [chosen], "n_blocked": len(cands), "n_scored": len(usable),
+            "n_candidates": len(usable), "path": path,
             "evidence": evidence, "confidence": confidence, "explanation": expl}
 
 
