@@ -89,6 +89,28 @@ Ranked by confidence instead of thresholded, it looks better, and this is the nu
 
 Both are true and the first is the honest one, because 0.7 is what runs. PR-AUC 87.2% against a 10.2% positive rate; beats the obvious rule (no exact-amount match) on F1, 76.7% vs 72.2%.
 
+### The lone exact-amount rule, and what its number does not say
+
+Taking the one candidate whose amount matches exactly is right **98.98%** of the
+time — measured among records that had *at least four blocked candidates*. The
+branch that uses that figure only fires when there is exactly **one** candidate,
+a population BenchRec's held-out set contains none of, because blocking never
+returns fewer than four.
+
+So 0.9898 is an **extrapolated estimate from the nearest measured population**,
+not the measured precision of the branch it governs. What the data does support
+is that precision holds up as competition falls:
+
+| candidates blocked | n | correct |
+|---|---|---|
+| 4-10 | 1,253 | 100.00% |
+| 11-50 | 258 | 96.51% |
+| 50+ | 834 | 98.20% |
+
+And that no subgroup hides a cliff — above 100k is 100.00% (n=113) against
+98.38% for 1k-10k, which inverts the usual worry. Regenerate with
+`uv run python scripts/audit_direct_rule.py`.
+
 ### Is the confidence number a probability?
 
 It was not. `confidence = sigmoid(top_score − second_score)` is a monotone

@@ -16,7 +16,7 @@ import pandas as pd
 from allocation_agent.adapters.benchrec import load_benchrec
 from allocation_agent.eval.splits import temporal_split
 from allocation_agent.match.blocker import BlockingConfig, block
-from allocation_agent.match.features import build_key_stats, featurise
+from allocation_agent.match.features import FEATURE_NAMES, build_key_stats, featurise
 from allocation_agent.match.multiplicity import (
     AccountPrior,
     MultiplicityDetector,
@@ -77,7 +77,13 @@ demo = {
                  for r in ds.key_rows if r.key in needed],
 }
 (OUT/"demo.json").write_text(json.dumps(demo))
-pickle.dump({"ranker": ranker, "detector": det, "prior": prior}, open(OUT/"models.pkl","wb"))
+# feature_names is declared so the API can refuse a model trained against a
+# different order rather than silently scoring the wrong columns -- a
+# reordering raises nothing, it just makes every number meaningless.
+(OUT/"models.pkl").write_bytes(pickle.dumps({
+    "ranker": ranker, "detector": det, "prior": prior,
+    "feature_names": list(FEATURE_NAMES),
+}))
 
 meta = {"n_demo_records": len(demo_ix), "n_demo_keys": len(needed),
         "trained_on": len(sp.train), "source": "BenchRec (ICAIF 2023)",

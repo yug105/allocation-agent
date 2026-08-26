@@ -36,7 +36,7 @@ from allocation_agent.decide.gate import GateConfig, decide
 from allocation_agent.decide.narrate import Narrator
 from allocation_agent.match.blocker import BlockingConfig
 from allocation_agent.match.engine import MULT_THRESHOLD, Models, match_one
-from allocation_agent.match.features import build_key_stats
+from allocation_agent.match.features import FEATURE_NAMES, build_key_stats
 from allocation_agent.match.solver import SolverConfig, SolverStatus, solve_subset
 from allocation_agent.report.audit import AuditLog, RunConfig
 from allocation_agent.stores.keys import KeyIndex, KeyRow
@@ -132,6 +132,7 @@ class _State:
         self.error: str | None = None
         self.calibrator = None
         self.calibrator_kind = "none"
+        self.bundle_meta: dict[str, Any] = {}
         self.models: Models | None = None
         self.overview: dict[str, Any] = {}
         self.settlements: list[dict] = []
@@ -171,6 +172,25 @@ class _State:
         # Maps the ranker's margin to the frequency with which the top
         # candidate is actually right. Fitted on validation, scored on test:
         # sigmoid(margin) claimed 74.8% where the truth was 21.5%.
+        # The bundle is a contract. Unpickling proves only that bytes were
+        # written by some version of this code, so what it must contain is
+        # checked here rather than discovered on the first request.
+        missing = [k for k in ("ranker", "detector", "prior") if bundle.get(k) is None]
+        if missing:
+            self.error = f"models.pkl is missing: {', '.join(missing)}"
+            return
+        declared = tuple(bundle.get("feature_names", FEATURE_NAMES))
+        if declared != tuple(FEATURE_NAMES):
+            # A reordered feature list is the dangerous case: the model scores
+            # the wrong columns and raises nothing at all.
+            self.error = ("models.pkl was trained against a different feature "
+                          f"order ({len(declared)} names, first differing at "
+                          f"{next((i for i, (a, b) in enumerate(zip(declared, FEATURE_NAMES, strict=False)) if a != b), 0)})")
+            return
+        self.bundle_meta = {
+            "feature_names": list(declared),
+            "calibrator": bundle.get("calibrator_kind", "none"),
+        }
         self.calibrator = bundle.get("calibrator")
         self.calibrator_kind = bundle.get("calibrator_kind", "none")
         self.models = Models(self.ranker, self.detector, self.prior,
@@ -216,6 +236,8 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     def health() -> dict:
         return {"ok": True, "models_loaded": state.ready,
+                "feature_version": len(state.bundle_meta.get("feature_names", [])),
+                "calibrator": state.bundle_meta.get("calibrator", "none"),
                 "n_demo_records": len(state.records), "error": state.error}
 
     @app.get("/api/meta")
@@ -265,31 +287,38 @@ def create_app() -> FastAPI:
         llm_before = narrator.calls
         started = time.perf_counter()
 
-        for rec in records:
-            truth_key, truly_mult = state.truth.get(rec.record_id, ("", False))
-            # Same function the upload path calls. One matching path, so the
-            # measured demo numbers say something about uploaded files too.
-            r = _match_or_degrade(rec, index=state.index, key_stats=state.key_stats,
-                                  models=state.models, gate=gate,
-                                  mult_threshold=req.mult_threshold,
-                                  blocking=BLOCKING, narrator=narrator,
-                                  calibrated=True)
-            audit.record(rec.record_id, r["decision"], keys=r["keys"],
-                         n_candidates=r["n_candidates"], path=r["path"],
-                         evidence=r["evidence"])
-            summary[r["outcome"]] += 1
-            value[r["outcome"]] += abs(rec.amount_minor) / 100
-            if r["outcome"] != "posted" and rec.day is not None:
-                unresolved.append((rec.day, abs(rec.amount_minor) / 100))
+        try:
+            for rec in records:
+                truth_key, truly_mult = state.truth.get(rec.record_id, ("", False))
+                # Same function the upload path calls. One matching path, so the
+                # measured demo numbers say something about uploaded files too.
+                r = _match_or_degrade(rec, index=state.index, key_stats=state.key_stats,
+                                      models=state.models, gate=gate,
+                                      mult_threshold=req.mult_threshold,
+                                      blocking=BLOCKING, narrator=narrator,
+                                      calibrated=True)
+                audit.record(rec.record_id, r["decision"], keys=r["keys"],
+                             n_candidates=r["n_candidates"], path=r["path"],
+                             evidence=r["evidence"])
+                summary[r["outcome"]] += 1
+                value[r["outcome"]] += abs(rec.amount_minor) / 100
+                if r["outcome"] != "posted" and rec.day is not None:
+                    unresolved.append((rec.day, abs(rec.amount_minor) / 100))
 
-            if r["outcome"] == "posted":
-                posted_correct += (not truly_mult and r["keys"][0] == truth_key)
-            else:
-                exceptions.append({**_exception(rec, r["outcome"], r["explanation"],
-                                                r["n_candidates"]),
-                                   "stage": r["stage"],
-                                   "residual": round(r["residual_minor"] / 100, 2),
-                                   "residual_cause": r["residual_cause"]})
+                if r["outcome"] == "posted":
+                    posted_correct += (not truly_mult and r["keys"][0] == truth_key)
+                else:
+                    exceptions.append({**_exception(rec, r["outcome"], r["explanation"],
+                                                    r["n_candidates"]),
+                                       "stage": r["stage"],
+                                       "residual": round(r["residual_minor"] / 100, 2),
+                                       "residual_cause": r["residual_cause"]})
+        except Exception as exc:  # noqa: BLE001
+            # A run that stops halfway must not look like one still
+            # going. Whatever it wrote is kept and the row says why.
+            audit.commit()
+            audit.fail_run(run_id, f"{type(exc).__name__}: {exc}")
+            raise HTTPException(500, f"run {run_id} failed: {type(exc).__name__}") from exc
 
         audit.commit()
         audit.finish_run(run_id)
@@ -497,10 +526,15 @@ def create_app() -> FastAPI:
 
     @app.get("/api/run/{run_id}/audit")
     def audit_trail(run_id: str) -> dict:
-        rows = audit.decisions(run_id=run_id)
-        if not rows:
-            raise HTTPException(404, f"no run {run_id}")
-        return {"run_id": run_id, "decisions": rows}
+        try:
+            meta = audit.get_run(run_id)
+        except KeyError:
+            raise HTTPException(404, f"no run {run_id}") from None
+        # The run's own row comes back with the decisions. Whether the batch
+        # completed is part of reading the trail, not a separate lookup -- a
+        # partial trail with no status is indistinguishable from a whole one.
+        return {"run_id": run_id, "run": meta,
+                "decisions": audit.decisions(run_id=run_id)}
 
     @app.post("/api/reconcile")
     async def reconcile(bank: UploadFile = File(...),
@@ -557,34 +591,40 @@ def create_app() -> FastAPI:
         results = []
         started = time.perf_counter()
 
-        for rec in records:
-            # calibrated=False: the calibrator and DIRECT_CONFIDENCE were both
-            # measured on BenchRec. Sharing a code path with this file does not
-            # transfer those measurements to it.
-            r = _match_or_degrade(rec, index=index, key_stats=key_stats,
-                                  models=state.models, gate=gate,
-                                  mult_threshold=MULT_THRESHOLD, blocking=BLOCKING,
-                                  narrator=narrator, calibrated=False)
-            audit.record(rec.record_id, r["decision"], keys=r["keys"],
-                         n_candidates=r["n_candidates"], path=r["path"],
-                         evidence=r["evidence"])
-            summary[r["outcome"]] += 1
-            if r["outcome"] != "posted" and rec.day is not None:
-                unresolved.append((rec.day, abs(rec.amount_minor) / 100))
-            results.append({
-                "record_id": rec.record_id,
-                "account": rec.account,
-                "amount": round(rec.amount_minor / 100, 2),
-                "outcome": r["outcome"],
-                "matched_key": r["keys"][0] if r["keys"] else None,
-                "confidence": r["confidence"],
-                "n_candidates": r["n_candidates"],
-                "residual": round(r["residual_minor"] / 100, 2),
-                "residual_cause": r["residual_cause"],
-                "explanation": r["explanation"],
-            })
+        try:
+            for rec in records:
+                # calibrated=False: the calibrator and DIRECT_CONFIDENCE were both
+                # measured on BenchRec. Sharing a code path with this file does not
+                # transfer those measurements to it.
+                r = _match_or_degrade(rec, index=index, key_stats=key_stats,
+                                      models=state.models, gate=gate,
+                                      mult_threshold=MULT_THRESHOLD, blocking=BLOCKING,
+                                      narrator=narrator, calibrated=False)
+                audit.record(rec.record_id, r["decision"], keys=r["keys"],
+                             n_candidates=r["n_candidates"], path=r["path"],
+                             evidence=r["evidence"])
+                summary[r["outcome"]] += 1
+                if r["outcome"] != "posted" and rec.day is not None:
+                    unresolved.append((rec.day, abs(rec.amount_minor) / 100))
+                results.append({
+                    "record_id": rec.record_id,
+                    "account": rec.account,
+                    "amount": round(rec.amount_minor / 100, 2),
+                    "outcome": r["outcome"],
+                    "matched_key": r["keys"][0] if r["keys"] else None,
+                    "confidence": r["confidence"],
+                    "n_candidates": r["n_candidates"],
+                    "residual": round(r["residual_minor"] / 100, 2),
+                    "residual_cause": r["residual_cause"],
+                    "explanation": r["explanation"],
+                })
+        except Exception as exc:  # noqa: BLE001
+            audit.commit()
+            audit.fail_run(run_id, f"{type(exc).__name__}: {exc}")
+            raise HTTPException(500, f"run {run_id} failed: {type(exc).__name__}") from exc
 
-        audit.commit(); audit.finish_run(run_id)
+        audit.commit()
+        audit.finish_run(run_id)
         return {
             "run_id": run_id,
             "n_records": len(records),

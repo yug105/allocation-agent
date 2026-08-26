@@ -1883,3 +1883,56 @@ and duplicate exact amounts never reach the direct branch.
 
 Nine failure modes, one real defect. That ratio is the argument for writing
 this kind of test rather than another twenty happy-path ones.
+
+---
+
+## Two infrastructure claims, and then the algorithm is frozen
+
+**"Incomplete" is now a state a run can be in.** `finish_run` was called after
+the loop, so a batch that crashed halfway left rows behind with a null
+`finished_at` — indistinguishable from a run still in progress, a killed
+process, or a broken audit writer. Months later nobody could tell those apart
+from the log, which is the only thing the log exists to make possible.
+
+A run is now `running`, then either `completed` or `failed` with the reason on
+the row. The rows a failed run wrote are kept: **a partial trail is evidence**,
+and the thing that must not be ambiguous is whether it is complete. Tested by
+making `_match_or_degrade` raise `MemoryError` on the sixth record — the
+endpoint returns 500, the run reads `failed`, and the five decisions written
+before it are still there.
+
+`runs.db` already exists in deployment, so the columns are added in place and
+pre-existing rows get a status inferred from whether they ever finished. A
+schema change that could not read the old file would have discarded exactly the
+history the log was built to keep.
+
+**The bundle is a contract rather than a bag.** `ready = True` was set after
+unpickling, without checking what came out — so `/api/health` could report
+`models_loaded: true` and the first request die on `NoneType has no attribute
+score`. It now refuses to come up if the ranker, detector or prior is missing.
+
+The more interesting check is `feature_names`. `FEATURE_NAMES` is an ordering
+contract with the pickled model, and a reordering **raises nothing at all** —
+the model scores the wrong columns and every number quietly becomes
+meaningless. The bundle declares the order it was trained against, the API
+refuses a mismatch, and `/api/health` reports `feature_version` and which
+calibrator is loaded.
+
+### On the wording, which was the fair correction
+
+I had written that the one-candidate case "should sit at or above 98.98%".
+That is an inference dressed as a finding. The two statements are now kept
+apart in the code and the README:
+
+> *Measured:* among records with exactly one exact-amount candidate **and at
+> least four blocked candidates**, taking it is right 98.98% of the time, and
+> precision does not deteriorate as competition falls — the 4-10 group is 100%.
+>
+> *Not measured:* what the rule does on one candidate. That population is
+> absent from the held-out distribution, so 0.9898 is an extrapolated estimate
+> from the nearest measured population, not the branch's precision.
+
+Matching logic is frozen here. Nine failure modes attacked, one real defect
+found — narration could unmake a decision the gate had already made — and the
+headline is unchanged at 99.45% precision, 76.85% straight-through, 4,000 of
+4,000 accounted for.

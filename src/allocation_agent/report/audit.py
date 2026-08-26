@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS runs (
     run_id        TEXT PRIMARY KEY,
     started_at    TEXT NOT NULL,
     finished_at   TEXT,
+    status        TEXT NOT NULL DEFAULT 'running',
+    failure       TEXT,
     approved_by   TEXT NOT NULL,
     blocking      TEXT NOT NULL,
     gate          TEXT NOT NULL,
@@ -115,8 +117,27 @@ class AuditLog:
         self._lock = threading.RLock()
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._conn.commit()
         self._run_id: str | None = None
+
+    def _migrate(self) -> None:
+        """Add columns an older file predates.
+
+        `runs.db` already exists in deployment. A schema change that cannot
+        read it would discard exactly the history the log was built to keep, so
+        the columns are added in place and existing rows are given a status
+        inferred from whether they ever finished.
+        """
+        have = {r["name"] for r in self._conn.execute("PRAGMA table_info(runs)")}
+        if "status" not in have:
+            self._conn.execute("ALTER TABLE runs ADD COLUMN status TEXT")
+            self._conn.execute(
+                "UPDATE runs SET status = CASE WHEN finished_at IS NULL "
+                "THEN 'unknown' ELSE 'completed' END"
+            )
+        if "failure" not in have:
+            self._conn.execute("ALTER TABLE runs ADD COLUMN failure TEXT")
 
     # -- runs ---------------------------------------------------------------- #
 
@@ -124,19 +145,49 @@ class AuditLog:
         run_id = uuid.uuid4().hex[:12]
         with self._lock:
             self._conn.execute(
-            "INSERT INTO runs (run_id, started_at, approved_by, blocking, gate, "
-            "policy_version, notes) VALUES (?,?,?,?,?,?,?)",
-                (run_id, _now(), config.approved_by, json.dumps(config.blocking),
-                 json.dumps(config.gate), config.policy_version, config.notes),
+            "INSERT INTO runs (run_id, started_at, status, approved_by, blocking, "
+            "gate, policy_version, notes) VALUES (?,?,?,?,?,?,?,?)",
+                (run_id, _now(), "running", config.approved_by,
+                 json.dumps(config.blocking), json.dumps(config.gate),
+                 config.policy_version, config.notes),
             )
             self._conn.commit()
         self._run_id = run_id
         return run_id
 
     def finish_run(self, run_id: str | None = None) -> None:
+        """Mark a run completed. The batch got to the end."""
         rid = run_id or self._run_id
         with self._lock:
-            self._conn.execute("UPDATE runs SET finished_at = ? WHERE run_id = ?", (_now(), rid))
+            self._conn.execute(
+                "UPDATE runs SET finished_at = ?, status = 'completed' WHERE run_id = ?",
+                (_now(), rid),
+            )
+            self._conn.commit()
+        if rid == self._run_id:
+            self._run_id = None
+
+    def fail_run(self, run_id: str | None = None, reason: str = "") -> None:
+        """Mark a run failed, keeping whatever it managed to write.
+
+        Without this a crashed run is indistinguishable from one still in
+        progress, a killed process, or a broken audit writer -- all of them
+        rows with a null `finished_at`. A partial trail is evidence; the thing
+        that must not be ambiguous is whether it is complete.
+        """
+        rid = run_id or self._run_id
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT status FROM runs WHERE run_id = ?", (rid,)).fetchone()
+            if row is None:
+                raise KeyError(rid)
+            if row["status"] == "completed":
+                raise ValueError(f"run {rid} is already completed; it cannot fail")
+            self._conn.execute(
+                "UPDATE runs SET finished_at = ?, status = 'failed', failure = ? "
+                "WHERE run_id = ?",
+                (_now(), reason or "unspecified", rid),
+            )
             self._conn.commit()
         if rid == self._run_id:
             self._run_id = None

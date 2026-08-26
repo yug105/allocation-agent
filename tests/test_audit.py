@@ -206,3 +206,81 @@ def test_the_log_is_usable_from_several_threads(tmp_path):
 
     assert not errors, errors
     assert len(log.decisions()) == 80
+
+
+# --------------------------------------------------------------------------- #
+# A run has a lifecycle, and "incomplete" has to be a state it can be in.
+#
+# Until now `finish_run` was called after the loop, so a run that crashed
+# halfway left rows behind with `finished_at` null — indistinguishable from a
+# run still in progress, a killed process, or a failed audit writer. For a
+# reconciliation system somebody has to be able to tell those apart months
+# later, from the log alone.
+# --------------------------------------------------------------------------- #
+
+def test_a_new_run_is_running(log):
+    run_id = log.start_run(run_cfg())
+    assert log.get_run(run_id)["status"] == "running"
+
+
+def test_a_finished_run_is_completed(log):
+    run_id = log.start_run(run_cfg())
+    log.finish_run(run_id)
+    assert log.get_run(run_id)["status"] == "completed"
+
+
+def test_a_failed_run_says_so_and_why(log):
+    run_id = log.start_run(run_cfg())
+    d = decide(confidence=0.99, amount_minor=100, config=GateConfig())
+    log.record("b1", d, keys=["K"], n_candidates=1, path="ranked")
+    log.fail_run(run_id, "MemoryError")
+
+    meta = log.get_run(run_id)
+    assert meta["status"] == "failed"
+    assert "MemoryError" in meta["failure"]
+    assert meta["finished_at"], "a failed run still ended at a known time"
+
+
+def test_the_rows_a_failed_run_wrote_are_kept(log):
+    """A partial trail is evidence. Discarding it loses what did happen."""
+    run_id = log.start_run(run_cfg())
+    d = decide(confidence=0.99, amount_minor=100, config=GateConfig())
+    for i in range(3):
+        log.record(f"b{i}", d, keys=["K"], n_candidates=1, path="ranked")
+    log.fail_run(run_id, "KeyboardInterrupt")
+    assert len(log.decisions(run_id=run_id)) == 3
+
+
+def test_a_completed_run_cannot_be_marked_failed_afterwards(log):
+    run_id = log.start_run(run_cfg())
+    log.finish_run(run_id)
+    with pytest.raises(ValueError, match="completed"):
+        log.fail_run(run_id, "too late")
+
+
+def test_reopening_the_database_preserves_the_status(tmp_path):
+    path = tmp_path / "status.db"
+    a = AuditLog(path)
+    run_id = a.start_run(run_cfg())
+    a.fail_run(run_id, "OSError")
+    a.close()
+    assert AuditLog(path).get_run(run_id)["status"] == "failed"
+
+
+def test_an_older_database_without_the_column_still_opens(tmp_path):
+    """runs.db already exists in deployment. A schema change that cannot read
+    it discards the audit history it was written to protect."""
+    import sqlite3
+    path = tmp_path / "legacy.db"
+    con = sqlite3.connect(path)
+    con.executescript("""
+        CREATE TABLE runs (run_id TEXT PRIMARY KEY, started_at TEXT NOT NULL,
+            finished_at TEXT, approved_by TEXT NOT NULL, blocking TEXT NOT NULL,
+            gate TEXT NOT NULL, policy_version TEXT NOT NULL, notes TEXT);
+        INSERT INTO runs VALUES ('old1','2026-01-01','2026-01-01','yug','{}','{}','v0.1','');
+    """)
+    con.commit()
+    con.close()
+
+    log = AuditLog(path)
+    assert log.get_run("old1")["status"] in {"completed", "unknown"}

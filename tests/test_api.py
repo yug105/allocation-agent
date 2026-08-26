@@ -1400,3 +1400,109 @@ def test_duplicate_exact_amount_candidates_never_take_the_direct_path(client):
              "invoice,account,amount,date\n"
              "INV-1,A-1,500.00,2026-03-01\nINV-2,A-1,500.00,2026-03-03\n")
     assert r["outcome"] != "posted" or r["confidence"] < 0.9898
+
+
+def test_a_run_that_crashes_is_marked_failed_not_left_running(client, monkeypatch):
+    """A null finished_at cannot distinguish a crash from a run in progress,
+    a killed process, or a broken audit writer."""
+    import allocation_agent.api as api_mod
+
+    calls = {"n": 0}
+    real = api_mod._match_or_degrade
+
+    def blow_up_partway(*a, **k):
+        calls["n"] += 1
+        if calls["n"] > 5:
+            raise MemoryError("out of memory")
+        return real(*a, **k)
+
+    monkeypatch.setattr(api_mod, "_match_or_degrade", blow_up_partway)
+    app = api_mod.create_app()
+    c = TestClient(app, raise_server_exceptions=False)
+    r = c.post("/api/run", json={"limit": 50})
+    assert r.status_code == 500
+
+    run_id = r.json()["detail"].split()[1]
+    meta = c.get(f"/api/run/{run_id}/audit").json()["run"]
+    assert meta["status"] == "failed"
+    assert "MemoryError" in meta["failure"]
+
+
+def test_the_rows_a_crashed_run_wrote_survive(client, monkeypatch):
+    import allocation_agent.api as api_mod
+
+    calls = {"n": 0}
+    real = api_mod._match_or_degrade
+
+    def blow_up_partway(*a, **k):
+        calls["n"] += 1
+        if calls["n"] > 5:
+            raise MemoryError("out of memory")
+        return real(*a, **k)
+
+    monkeypatch.setattr(api_mod, "_match_or_degrade", blow_up_partway)
+    c = TestClient(api_mod.create_app(), raise_server_exceptions=False)
+    r = c.post("/api/run", json={"limit": 50})
+    run_id = r.json()["detail"].split()[1]
+    trail = c.get(f"/api/run/{run_id}/audit").json()
+    assert len(trail["decisions"]) == 5, "a partial trail is evidence; it was discarded"
+
+
+# --------------------------------------------------------------------------- #
+# The bundle is a contract, not a bag.
+#
+# `ready = True` was set after unpickling, without checking that what came out
+# was usable. So health could report models_loaded while the first request died
+# on `NoneType has no attribute score` — and a model trained against a
+# different FEATURE_NAMES order would score the wrong columns in silence, which
+# no exception would ever surface.
+# --------------------------------------------------------------------------- #
+
+def test_a_bundle_missing_a_model_is_refused_at_startup(tmp_path, monkeypatch):
+    import pickle
+
+    import allocation_agent.api as api_mod
+    for name in ("demo.json", "meta.json"):
+        (tmp_path / name).write_text((api_mod.ARTIFACTS / name).read_text())
+    (tmp_path / "models.pkl").write_bytes(pickle.dumps({"ranker": None}))
+    monkeypatch.setattr(api_mod, "ARTIFACTS", tmp_path)
+
+    state = api_mod._State()
+    state.load()
+    assert state.ready is False
+    assert "detector" in state.error or "ranker" in state.error
+
+
+def test_a_model_trained_on_a_different_feature_order_is_refused(tmp_path, monkeypatch):
+    """Reordering FEATURE_NAMES makes the model score the wrong columns. It
+    raises nothing — the numbers just quietly become meaningless."""
+    import pickle
+
+    import allocation_agent.api as api_mod
+    for name in ("demo.json", "meta.json"):
+        (tmp_path / name).write_text((api_mod.ARTIFACTS / name).read_text())
+    bundle = pickle.loads((api_mod.ARTIFACTS / "models.pkl").read_bytes())
+    bundle["feature_names"] = ("some", "other", "order")
+    (tmp_path / "models.pkl").write_bytes(pickle.dumps(bundle))
+    monkeypatch.setattr(api_mod, "ARTIFACTS", tmp_path)
+
+    state = api_mod._State()
+    state.load()
+    assert state.ready is False
+    assert "feature" in state.error.lower()
+
+
+def test_the_shipped_bundle_declares_what_it_was_trained_against(client):
+    from allocation_agent.api import _State
+    from allocation_agent.match.features import FEATURE_NAMES
+    state = _State()
+    state.load()
+    assert state.ready
+    assert tuple(state.bundle_meta["feature_names"]) == tuple(FEATURE_NAMES)
+
+
+def test_health_reports_what_the_models_were_trained_against(client):
+    body = client.get("/api/health").json()
+    assert body["models_loaded"] is True
+    assert body["feature_version"]
+    assert body["calibrator"] in {"isotonic", "platt"}

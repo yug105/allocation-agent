@@ -44,13 +44,23 @@ from allocation_agent.types import BankRecord
 #     11-50                 258     96.51%
 #     50+                   834     98.20%
 #
-# Fewer competing candidates goes with higher precision, so the one-candidate
-# case should sit at or above 98.98% rather than below it. No amount bucket
-# falls under the gate's base bar either -- above 100k is 100.00% (n=113),
-# which inverts the usual worry that one constant hides a dangerous tail.
+# Two separate statements, and only the first is measured:
 #
-# It is labelled `..._unvalidated` wherever it is used, because an
-# extrapolation is not a measurement.
+#   Measured: among records with exactly one exact-amount candidate *and at
+#   least four blocked candidates*, taking that candidate is right 98.98% of
+#   the time. Precision does not deteriorate as competition falls -- the 4-10
+#   group is 100.00%.
+#
+#   Not measured: what the rule does on one candidate. That population is
+#   absent from BenchRec's held-out distribution, so 0.9898 is an extrapolated
+#   estimate from the nearest measured population, not the branch's precision.
+#
+# No amount bucket falls under the gate's base bar either -- above 100k is
+# 100.00% (n=113), which inverts the usual worry that one constant hides a
+# dangerous tail.
+#
+# Labelled `..._unvalidated` wherever it is used, because an extrapolation is
+# not a measurement.
 DIRECT_CONFIDENCE = 0.9898
 
 # On data with no measurement behind it the figure is used unchanged but
