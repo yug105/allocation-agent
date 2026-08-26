@@ -2054,3 +2054,42 @@ The tests held it honest through the rewrite — no internal enum name on the
 visible page, the record control still clamps before sending, the throughput
 figure still comes from the server, and `straight-through` is still banned as
 jargon. 423 pass unchanged.
+
+---
+
+## A test that measured memorisation and called it learning
+
+Three from a review of the tests and the screenshots.
+
+**`test_learns_a_separable_signal` fitted and scored the same rows.** It asserts
+90% accuracy on `X, y` after training on `X, y` — which proves the model has the
+capacity to fit a toy signal and says nothing about generalising. The name
+claimed the second thing.
+
+Split in two. `test_can_fit_a_separable_signal` keeps the original behaviour
+under a name that describes it, and `test_generalises_to_rows_it_was_not_fitted_on`
+trains on one half and scores the other, so the signal has to transfer rather
+than be remembered. Both pass, but only one of them was ever entitled to the
+word *learns*.
+
+**The determinism test relied on a default.** `RankerConfig.random_state` does
+default to 0, so the test passed — but it passed *because of an implementation
+detail*, not because the contract was stated. If that default ever became
+random, the test would go on passing while reproducibility disappeared. The
+seed is now explicit at every call site, and a second test pins the seed as the
+mechanism rather than the coincidence.
+
+**The two headline numbers invited a question the page did not answer.** The
+Overview said *76.9% needed no person*; running 100 payments on Reconcile gives
+*76 posted*, and 200 gives *73.5%*. Both are correct — one is the full 4,000
+benchmark, the other a fresh smaller run — and nothing on screen said so. A
+judge noticing the gap would reasonably wonder which number to believe.
+
+Now the hero reads "of those **4,000 benchmark payments**" on the face of the
+figure, and a run reports "This run: 200 payments… the Overview figures come
+from all 4,000, so a smaller run will not land on exactly the same
+percentages." The distinction is on screen instead of in an answer I would have
+had to give out loud.
+
+That last one is the same defect as every other in this journal, in a new
+place: a number stated without the population it belongs to.

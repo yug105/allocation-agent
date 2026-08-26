@@ -233,8 +233,9 @@ color:var(--muted);font-size:.87rem;margin:.9rem 0}
 <section id=v1 class=hide>
   <div class=top><div>
     <h2>Reconcile</h2>
-    <p class=sub>Records the models have never seen, with known correct answers —
-    so the accuracy below is measured against them, not asserted.</p>
+    <p class=sub>A fresh run over however many payments you ask for, drawn from
+    the same held-out set — records the models have never seen, with known
+    correct answers, so the figures are measured rather than asserted.</p>
   </div></div>
   <div style="display:flex;gap:.7rem;align-items:center;flex-wrap:wrap">
     <label>payments <input id=n type=number value=200 min=1 max=4000 style=width:6rem></label>
@@ -410,9 +411,10 @@ fetch('/api/overview').then(r=>r.json()).then(o=>{
   $('#hero').innerHTML=`
   <div class=headline>
     <div><div class="k g">${pct(o.precision_of_posted)}</div>
-      <div class=l>of what it reconciled on its own was correct</div></div>
+      <div class=l>of what it reconciled on its own was correct, across
+      ${fmt(o.n_records)} benchmark payments</div></div>
     <div><div class=k>${pct(o.straight_through_rate)}</div>
-      <div class=l>of payments needed no person at all</div></div>
+      <div class=l>of those ${fmt(o.n_records)} needed no person at all</div></div>
   </div>
   <div class=split>
     <i style="width:${share(o.posted_value)}%;background:var(--ok)"></i>
@@ -475,7 +477,9 @@ function renderRun(d){
     <div class=card><div class=v>${money(d.queue_value)}</div><div class=l>value awaiting review</div></div>
     <div class=card><div class=v>${d.llm_calls_on_matching_path}</div><div class=l>AI calls while matching</div></div>
   </div>
-  <p class=faint>${fmt(d.n_records)} payments in ${d.seconds}s ·
+  <p class=faint>This run: ${fmt(d.n_records)} payments in ${d.seconds}s. The
+  Overview figures come from all ${META?fmt(META.n_demo_records):'4,000'} benchmark
+  payments, so a smaller run here will not land on exactly the same percentages ·
   ${fmt(s.posted+s.queued+s.suspected_grouped+s.no_candidate+(s.unscorable||0)+(s.model_error||0))}
   of ${fmt(d.n_records)} accounted for, none dropped ·
   <button class="go ghost" style="padding:.25rem .6rem;font-size:.8rem" onclick="nav(2)">Review ${fmt(d.n_exceptions)} exceptions →</button></p>`;
