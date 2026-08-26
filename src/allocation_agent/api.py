@@ -23,7 +23,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -33,11 +32,11 @@ from allocation_agent.adapters.csv_upload import (
     parse_bank_csv,
     parse_ledger_csv,
 )
-from allocation_agent.decide.gate import GateConfig, Outcome, decide
-from allocation_agent.decide.narrate import Narrator, diagnose_residual
-from allocation_agent.match.blocker import BlockingConfig, block
-from allocation_agent.match.features import build_key_stats, featurise
-from allocation_agent.match.multiplicity import featurise_multiplicity
+from allocation_agent.decide.gate import GateConfig
+from allocation_agent.decide.narrate import Narrator
+from allocation_agent.match.blocker import BlockingConfig
+from allocation_agent.match.engine import MULT_THRESHOLD, Models, match_one
+from allocation_agent.match.features import build_key_stats
 from allocation_agent.match.solver import SolverConfig, SolverStatus, solve_subset
 from allocation_agent.report.audit import AuditLog, RunConfig
 from allocation_agent.stores.keys import KeyIndex, KeyRow
@@ -68,7 +67,6 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_UPLOAD_ROWS = 20_000
 
 # Measured on the held-out set, not asserted: see _match_one.
-DIRECT_CONFIDENCE = 0.9898
 
 # Below this many records, report counts rather than rates.
 MIN_FOR_RATES = 20
@@ -78,12 +76,6 @@ MIN_FOR_RATES = 20
 # window would have silently disagreed with what the audit log claimed was used.
 BLOCKING = BlockingConfig(date_slack_days=7)
 
-# Where the grouping detector's probability becomes a routing decision. Owned
-# here because it was written twice -- 0.7 in the demo endpoint's request model
-# and 0.5 hardcoded in the upload path -- so the same record could be called
-# grouped by one and matched by the other. Measured on the held-out split, that
-# difference is 68.4% precision against 57.6%.
-MULT_THRESHOLD = 0.7
 
 # An aging report needs a book that spans time. Measured on the held-out set:
 # it covers 27 days, every record lands in one 30-day bucket, and the auto-post
@@ -139,6 +131,7 @@ class _State:
         self.error: str | None = None
         self.calibrator = None
         self.calibrator_kind = "none"
+        self.models: Models | None = None
         self.overview: dict[str, Any] = {}
         self.settlements: list[dict] = []
         self.payments: dict[str, dict] = {}
@@ -179,6 +172,8 @@ class _State:
         # sigmoid(margin) claimed 74.8% where the truth was 21.5%.
         self.calibrator = bundle.get("calibrator")
         self.calibrator_kind = bundle.get("calibrator_kind", "none")
+        self.models = Models(self.ranker, self.detector, self.prior,
+                             self.calibrator, self.calibrator_kind)
         self.meta = json.loads((ARTIFACTS / "meta.json").read_text())
 
         ov = ARTIFACTS / "overview.json"
@@ -272,8 +267,10 @@ def create_app() -> FastAPI:
             truth_key, truly_mult = state.truth.get(rec.record_id, ("", False))
             # Same function the upload path calls. One matching path, so the
             # measured demo numbers say something about uploaded files too.
-            r = _match_one(state, rec, state.index, state.key_stats, gate,
-                           req.mult_threshold, narrator)
+            r = match_one(rec, index=state.index, key_stats=state.key_stats,
+                          models=state.models, gate=gate,
+                          mult_threshold=req.mult_threshold, blocking=BLOCKING,
+                          narrator=narrator)
             audit.record(rec.record_id, r["decision"], keys=r["keys"],
                          n_candidates=r["n_candidates"], path=r["path"],
                          evidence=r["evidence"])
@@ -553,7 +550,9 @@ def create_app() -> FastAPI:
         started = time.perf_counter()
 
         for rec in records:
-            r = _match_one(state, rec, index, key_stats, gate, MULT_THRESHOLD, narrator)
+            r = match_one(rec, index=index, key_stats=key_stats, models=state.models,
+                          gate=gate, mult_threshold=MULT_THRESHOLD,
+                          blocking=BLOCKING, narrator=narrator)
             audit.record(rec.record_id, r["decision"], keys=r["keys"],
                          n_candidates=r["n_candidates"], path=r["path"],
                          evidence=r["evidence"])
@@ -597,150 +596,6 @@ def create_app() -> FastAPI:
 
 
 
-def _match_one(state: _State, rec: BankRecord, index, key_stats, gate,
-               mult_threshold: float, narrator: Narrator | None = None) -> dict:
-    """Run one record through the whole matching path.
-
-    Extracted so an uploaded file goes through *identical* code to the demo. A
-    separate path for user data would make the demo's numbers evidence for
-    nothing but the demo.
-    """
-    cands = sorted(block(rec, index, BLOCKING))
-
-    if not cands:
-        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
-        return {"residual_cause": None, "residual_minor": 0, "stage": "narrowing", "outcome": "no_candidate", "decision": d,
-                "keys": [], "n_candidates": 0, "path": "blocked", "evidence": None,
-                "confidence": None,
-                "explanation": "Nothing in the ledger is close enough to consider — "
-                               "no entry shares this account within a week of this date."}
-
-    usable = [k for k in cands if k in key_stats]
-    if not usable:
-        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
-        return {"residual_cause": None, "residual_minor": 0, "stage": "narrowing", "outcome": "no_candidate", "decision": d,
-                "keys": [], "n_candidates": 0, "path": "blocked", "evidence": None,
-                "confidence": None,
-                "explanation": "Nothing in the ledger is close enough to consider."}
-
-    # A lone candidate whose amount is exactly this figure is direct evidence,
-    # and it limits what the next two steps are entitled to do.
-    exact = [k for k in usable if rec.amount_minor in key_stats[k].amounts]
-    lone_exact = len(exact) == 1
-
-    # 1. The grouping check does not get to overrule it. Measured on the
-    #    held-out set: the detector is right 96.3% of the time overall, but on
-    #    records with a lone exact-amount match it fires 41 times and is wrong
-    #    on 36 -- 12.2% precision. A single entry accounting for the whole
-    #    amount defeats the premise of the grouped path and the detector cannot
-    #    see that. Everywhere else it is trusted exactly as before.
-    p_mult = _p_multiple_with(state, rec, usable, key_stats)
-    if p_mult >= mult_threshold and not lone_exact:
-        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
-        return {"residual_cause": None, "residual_minor": 0, "stage": "grouping", "outcome": "suspected_grouped", "decision": d,
-                "keys": [], "n_candidates": len(cands), "path": "multiplicity",
-                "evidence": {"p_multiple": round(p_mult, 4)}, "confidence": None,
-                "explanation": f"This looks like one payment covering several ledger "
-                               f"entries ({p_mult:.0%} confidence), so a single match "
-                               f"would be wrong. Sent for review."}
-
-    # 2. Rank. Confidence is the gap between first and second place.
-    X = np.vstack([featurise(rec, key_stats[k], n_candidates=len(usable)) for k in usable])
-    scores = state.ranker.score(X)
-    order = np.argsort(-scores)
-    chosen = usable[int(order[0])]
-
-    if len(order) > 1:
-        margin = float(scores[order[0]] - scores[order[1]])
-        # LambdaRank optimises order, not likelihood, so its margin carries no
-        # probability meaning and neither does a sigmoid of it. The calibrator
-        # maps margin to the measured frequency of being right; without one,
-        # fall back to the sigmoid and say so in the evidence.
-        if state.calibrator is not None:
-            confidence = float(np.clip(state.calibrator.predict([margin])[0], 0.0, 1.0))
-        else:
-            confidence = float(1.0 / (1.0 + np.exp(-margin)))
-        path = "ranked"
-        evidence = {"margin": round(margin, 4),
-                    "confidence_from": state.calibrator_kind}
-        # When a lone exact amount kept the grouping check from firing, the
-        # trail has to say so. Without this the record is indistinguishable
-        # from an ordinary match, and a reviewer cannot see that a
-        # probabilistic detector was overridden or on what grounds.
-        if lone_exact and p_mult >= mult_threshold:
-            evidence |= {"exact_amount": True, "overrode_grouping": True,
-                         "p_multiple": round(p_mult, 4)}
-    elif lone_exact:
-        # No runner-up, so no margin exists. The old code substituted
-        # margin=1.0 here, which is sigmoid -> 73.1%: a constant dressed as a
-        # measurement, and permanently under the 85% base bar -- a lone
-        # candidate could never post however exact the match. Blocking never
-        # returns fewer than 4 candidates on BenchRec, so no test could reach
-        # it and every small uploaded file did.
-        #
-        # The evidence here is the exact amount itself. On the held-out set,
-        # where exactly one candidate matches the amount exactly it is the
-        # right answer 98.98% of the time (2,321 of 2,345). That measured rate
-        # is the confidence.
-        chosen, confidence = exact[0], DIRECT_CONFIDENCE
-        path, evidence = "direct", {"exact_amount": True}
-    else:
-        # One candidate, and its amount is not this figure. Nothing supports it.
-        confidence, path, evidence = None, "ranked", None
-
-    d = decide(confidence=confidence, amount_minor=rec.amount_minor, config=gate)
-
-    if confidence is None:
-        expl = (f"{chosen} is the only nearby ledger entry, but its amount is not this "
-                f"figure and there is no second candidate to weigh it against. Nothing "
-                f"here supports posting it, so it goes to a person.")
-    elif path == "direct":
-        expl = (f"Matched to {chosen}, the one nearby ledger entry whose amount is "
-                f"exactly this figure. On records like this that entry is the right "
-                f"answer {DIRECT_CONFIDENCE:.0%} of the time."
-                if d.outcome is Outcome.POST else
-                f"{chosen} matches this amount exactly, but {DIRECT_CONFIDENCE:.0%} is "
-                f"still under the {d.threshold_required:.0%} an amount this large "
-                f"requires. Sent for review.")
-    elif d.outcome is Outcome.POST:
-        expl = (f"Matched to {chosen}. It was the best of {len(usable)} nearby ledger "
-                f"entries by a clear enough margin ({confidence:.0%}) to post without "
-                f"a human looking.")
-    else:
-        expl = (f"Best guess is {chosen}, but at {confidence:.0%} it is under the "
-                f"{d.threshold_required:.0%} this amount requires. Sent for review "
-                f"rather than posted.")
-
-    # A queued record with an amount gap has something to diagnose: the reviewer
-    # needs to know *why* the figures differ, not only that they do. Causes are
-    # ranked by arithmetic fit; the narrator turns the winner into a sentence
-    # and refuses to emit any figure the record does not carry.
-    residual_cause = None
-    residual_minor = 0
-    if narrator is not None and d.outcome is not Outcome.POST and confidence is not None:
-        stats = key_stats[chosen]
-        # The gap against the nearest single line, which is what a reviewer
-        # compares. `amounts` is a frozenset -- indexing it is meaningless.
-        nearest = min(stats.amounts, key=lambda a: abs(rec.amount_minor - a),
-                      default=0)
-        residual_minor = rec.amount_minor - nearest
-        if residual_minor:
-            causes = diagnose_residual(
-                residual_minor=residual_minor, amount_minor=rec.amount_minor,
-                n_lines=stats.n_rows, usual_fee_bps=0)
-            (told,) = narrator.narrate([{
-                "record_id": rec.record_id, "causes": causes,
-                "residual_minor": residual_minor, "amount_minor": rec.amount_minor,
-                "n_lines": stats.n_rows}])
-            residual_cause = told["cause"]
-            expl = f"{expl} {told['sentence']}"
-
-    return {"stage": "ranking",
-            "residual_cause": residual_cause,
-            "residual_minor": residual_minor, "outcome": "posted" if d.outcome is Outcome.POST else "queued",
-            "decision": d, "keys": [chosen], "n_candidates": len(usable), "path": path,
-            "evidence": evidence, "confidence": confidence, "explanation": expl}
-
 
 def _span(days: list[int | None]) -> int:
     known = [d for d in days if d is not None]
@@ -776,15 +631,6 @@ def _aging(unresolved: list[tuple[int, float]], span: int) -> dict:
         })
     return {"meaningful": True, "span_days": span, "buckets": buckets,
             "note": "Measured from the most recent entry in the file."}
-
-
-def _p_multiple_with(state: _State, rec: BankRecord, cands: list[str], key_stats) -> float:
-    amts = [a for k in cands if k in key_stats for a in key_stats[k].amounts]
-    has_exact = rec.amount_minor in amts if amts else False
-    min_delta = min((abs(rec.amount_minor - a) for a in amts), default=1e12)
-    f = featurise_multiplicity(rec, n_candidates=len(cands), has_exact=has_exact,
-                               min_delta_minor=float(min_delta), prior=state.prior)
-    return float(state.detector.predict_proba(f.reshape(1, -1))[0])
 
 
 

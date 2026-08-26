@@ -38,32 +38,22 @@ def test_every_record_produces_exactly_one_decision(audit):
     assert len(audit.decisions(r.run_id)) == len(records)
 
 
+class _FlatRanker:
+    """Scores everything equally. Enough to reach the stages after ranking
+    without asserting anything about which key a real model would pick."""
+
+    def score(self, X):
+        import numpy as np
+        return np.zeros(len(X), dtype=float)
+
+
 def test_orphan_records_are_reported_not_dropped(audit):
     idx, stats, records = setup(n_orphan=2)
-    r = run_batch(records, idx, stats, audit, run_config=cfg())
+    r = run_batch(records, idx, stats, audit, run_config=cfg(), ranker=_FlatRanker())
     assert r.no_candidate == 2
     assert r.exceptions["no_candidate"] == 2
 
 
-def test_runs_without_a_ranker(audit):
-    """No model available must degrade to rules, not halt."""
-    idx, stats, records = setup()
-    r = run_batch(records, idx, stats, audit, run_config=cfg(), ranker=None)
-    assert r.posted > 0
-    assert all(d["path"] in ("fallback_rules", "blocked") for d in audit.decisions(r.run_id))
-
-
-def test_fallback_path_is_named_in_the_audit_trail(audit):
-    """A reviewer must be able to see the model was not involved."""
-    idx, stats, records = setup(n_orphan=0)
-    r = run_batch(records, idx, stats, audit, run_config=cfg())
-    assert {d["path"] for d in audit.decisions(r.run_id)} == {"fallback_rules"}
-
-
-def test_no_llm_call_on_the_matching_path(audit):
-    idx, stats, records = setup()
-    r = run_batch(records, idx, stats, audit, run_config=cfg())
-    assert r.llm_calls == 0
 
 
 def test_strict_gate_queues_everything(audit):
@@ -100,44 +90,75 @@ def test_rerun_is_deterministic(audit, tmp_path):
     assert (a.posted, a.queued, a.no_candidate) == (b.posted, b.queued, b.no_candidate)
 
 
-def test_a_tie_on_the_deciding_evidence_is_refused_not_posted():
-    """Three ledger entries of the same amount on the same day are a tie, not
-    a match. Returning the first at 0.90 would auto-post an arbitrary pick --
-    the exact behaviour the rest of the system refuses."""
-    from allocation_agent.match.features import KeyStats
-    from allocation_agent.pipeline import _fallback_choice
-    from allocation_agent.types import BankRecord
-
-    rec = BankRecord("b1", "A", 1_000_000, 100)
-    stats = {k: KeyStats(amounts=frozenset({1_000_000}), days=(100,), n_rows=1)
-             for k in ("K1", "K2", "K3")}
-    chosen, confidence = _fallback_choice(rec, ["K1", "K2", "K3"], stats)
-    assert chosen is None
-    assert confidence is None
 
 
-def test_a_clear_winner_is_still_chosen():
-    from allocation_agent.match.features import KeyStats
-    from allocation_agent.pipeline import _fallback_choice
-    from allocation_agent.types import BankRecord
 
-    rec = BankRecord("b1", "A", 1_000_000, 100)
-    stats = {
-        "K1": KeyStats(amounts=frozenset({1_000_000}), days=(100,), n_rows=1),
-        "K2": KeyStats(amounts=frozenset({9_999_999}), days=(100,), n_rows=1),
-    }
-    chosen, confidence = _fallback_choice(rec, ["K1", "K2"], stats)
-    assert chosen == "K1"
-    assert confidence == 0.90
+# --------------------------------------------------------------------------- #
+# This module used to carry its own copy of the matching logic, and the copy
+# fell behind: no calibration, a fabricated margin for the single-candidate
+# case, the grouping check still able to overrule an exact amount, and a record
+# that could leave the audit trail entirely when blocking found candidates that
+# key_stats did not cover. A review found eight defects; every one was a fix
+# that already existed in the API and had never been carried across.
+#
+# It now calls match_one, so there is one implementation to fix.
+# --------------------------------------------------------------------------- #
 
-
-def test_scores_and_selection_index_the_same_list():
-    """X is built from candidates present in key_stats; selecting from the
-    unfiltered list shifts every position after the first missing key, so a
-    correct ranking still picks the wrong ledger entry."""
+def test_the_batch_runner_uses_the_shared_engine():
     import inspect
 
     from allocation_agent import pipeline
     src = inspect.getsource(pipeline.run_batch)
-    assert "chosen = scored[int(order[0])]" in src
-    assert "chosen = candidates[int(order[0])]" not in src
+    assert "match_one(" in src
+    assert "featurise(" not in src, "still scoring locally"
+    assert "np.argsort" not in src, "still ranking locally"
+
+
+def test_without_a_ranker_everything_goes_to_a_person(tmp_path):
+    """The rules pick returned 0.90 for an exact amount and 0.55 otherwise --
+    a different scale from the calibrated model, handed to the same gate. Not
+    scoring is the honest degradation, and every record still gets a row."""
+    from allocation_agent.match.blocker import BlockingConfig
+    from allocation_agent.pipeline import run_batch
+    from allocation_agent.report.audit import AuditLog, RunConfig
+    from allocation_agent.stores.keys import KeyIndex, KeyRow
+    from allocation_agent.types import BankRecord
+
+    records = [BankRecord(f"b{i}", "A", 1000, 10) for i in range(4)]
+    audit = AuditLog(tmp_path / "n.db")
+    result = run_batch(records, KeyIndex([KeyRow("K1", "A", 1000, 10)]), {}, audit,
+                       run_config=RunConfig(approved_by="t", blocking={}, gate={}),
+                       blocking=BlockingConfig(date_slack_days=7), ranker=None)
+    assert result.posted == 0
+    assert result.queued == 4
+    rows = audit.decisions(run_id=result.run_id)
+    assert len(rows) == 4
+    assert all(r["path"] == "no_ranker" for r in rows)
+
+
+def test_a_model_failure_becomes_an_exception_not_the_end_of_the_batch(tmp_path):
+    """'Degrades rather than halts' has to hold for the models too."""
+    from allocation_agent.decide.gate import GateConfig
+    from allocation_agent.match.blocker import BlockingConfig
+    from allocation_agent.pipeline import run_batch
+    from allocation_agent.report.audit import AuditLog, RunConfig
+    from allocation_agent.stores.keys import KeyIndex, KeyRow
+    from allocation_agent.types import BankRecord
+
+    class Exploding:
+        def score(self, X):
+            raise RuntimeError("model blew up")
+
+    records = [BankRecord(f"b{i}", "A", 1000, 10) for i in range(5)]
+    rows = [KeyRow("K1", "A", 1000, 10), KeyRow("K2", "A", 1200, 11)]
+    audit = AuditLog(tmp_path / "a.db")
+    result = run_batch(records, KeyIndex(rows), {}, audit,
+                       run_config=RunConfig(approved_by="t", blocking={}, gate={}),
+                       blocking=BlockingConfig(date_slack_days=7),
+                       gate=GateConfig(), ranker=Exploding())
+
+    assert result.n_records == 5
+    assert result.posted + result.queued + result.no_candidate \
+        + result.suspected_multiple == 5
+    assert len(audit.decisions(run_id=result.run_id)) == 5, \
+        "a record left the audit trail"

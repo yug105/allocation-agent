@@ -1087,8 +1087,9 @@ def test_overruling_the_grouping_check_is_recorded_as_evidence(client):
     """Nine held-out records hit this: the detector fires, a lone exact amount
     overrules it, and the record posts. Found by scanning the real data rather
     than staged, because the detector will not fire on a three-row fixture."""
-    from allocation_agent.api import BLOCKING, MULT_THRESHOLD, _p_multiple_with, _State
+    from allocation_agent.api import BLOCKING, MULT_THRESHOLD, _State
     from allocation_agent.match.blocker import block
+    from allocation_agent.match.engine import p_multiple
 
     state = _State()
     state.load()
@@ -1099,8 +1100,8 @@ def test_overruling_the_grouping_check_is_recorded_as_evidence(client):
         if not usable:
             continue
         exact = [k for k in usable if rec.amount_minor in state.key_stats[k].amounts]
-        if len(exact) == 1 and _p_multiple_with(state, rec, usable,
-                                                state.key_stats) >= MULT_THRESHOLD:
+        if len(exact) == 1 and p_multiple(state.models, rec, usable,
+                                          state.key_stats) >= MULT_THRESHOLD:
             target = rec.record_id
             break
     assert target, "no record exercises the override"

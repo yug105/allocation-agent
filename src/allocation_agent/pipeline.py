@@ -18,11 +18,10 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-import numpy as np
-
-from allocation_agent.decide.gate import GateConfig, Outcome, decide
-from allocation_agent.match.blocker import BlockingConfig, block
-from allocation_agent.match.features import KeyStats, featurise
+from allocation_agent.decide.gate import GateConfig, decide
+from allocation_agent.match.blocker import BlockingConfig
+from allocation_agent.match.engine import MULT_THRESHOLD, Models, match_one
+from allocation_agent.match.features import KeyStats
 from allocation_agent.report.audit import AuditLog, RunConfig
 from allocation_agent.stores.keys import KeyIndex
 from allocation_agent.types import BankRecord
@@ -46,7 +45,6 @@ class RunResult:
     suspected_multiple: int = 0
     exceptions: Counter = field(default_factory=Counter)
     seconds: float = 0.0
-    llm_calls: int = 0
 
     @property
     def straight_through_rate(self) -> float:
@@ -68,39 +66,6 @@ class RunResult:
         )
 
 
-def _fallback_choice(record: BankRecord, candidates: list[str],
-                     key_stats: dict[str, KeyStats]) -> tuple[str | None, float]:
-    """Deterministic pick used when no ranker is available.
-
-    Exact amount first, then nearest date. Confidence is a coarse rule-derived
-    value, never a model score, and it is deliberately capped below the
-    auto-post threshold for large amounts.
-    """
-    scored = []
-    for k in candidates:
-        st = key_stats.get(k)
-        if st is None:
-            continue
-        exact = 0 if record.amount_minor in st.amounts else 1
-        gap = (min((abs(record.day - d) for d in st.days), default=999)
-               if record.day is not None else 999)
-        scored.append(((exact, gap), k))
-    scored.sort()
-    best, best_score = (scored[0][1], scored[0][0]) if scored else (None, None)
-
-    # Three ledger entries of the same amount on the same day are not a match,
-    # they are a tie. The rule has nothing left to separate them, so returning
-    # the first and calling it 90% would auto-post an arbitrary pick. Refuse.
-    if len(scored) > 1 and scored[0][0] == scored[1][0]:
-        return None, None
-
-    if best is None:
-        return None, 0.0
-    # A rule-derived number, not a model score, and it says so at the call site.
-    # 0.90 clears the base bar but not the bar a large amount raises, so the
-    # rules path can post a small exact match and never a large one.
-    confidence = 0.90 if best_score[0] == 0 else 0.55
-    return best, confidence
 
 
 def run_batch(
@@ -114,10 +79,21 @@ def run_batch(
     gate: GateConfig | None = None,
     ranker: Any = None,
     multiplicity: Any = None,
-    mult_features: Any = None,
-    mult_threshold: float = 0.7,
+    prior: Any = None,
+    calibrator: Any = None,
+    calibrator_kind: str = "none",
+    mult_threshold: float = MULT_THRESHOLD,
 ) -> RunResult:
-    """Reconcile a batch, recording every decision as it is made."""
+    """Reconcile a batch, recording every decision as it is made.
+
+Without a ranker every record is queued. This used to fall back to a rules
+    pick returning 0.90 for an exact amount and 0.55 otherwise — numbers on a
+    different scale from the model's, handed to the same gate as though they
+    were comparable. Now that the model's confidence is a calibrated
+    probability, that mixture would make one threshold mean two things. Not
+    scoring is the honest degradation: it cannot judge, so a person does.
+    """
+
     bcfg = blocking or BlockingConfig()
     gcfg = gate or GateConfig()
 
@@ -125,70 +101,51 @@ def run_batch(
     result = RunResult(run_id=run_id, n_records=len(records))
     started = time.perf_counter()
 
-    for i, record in enumerate(records):
-        candidates = sorted(block(record, key_index, bcfg))
-        n = len(candidates)
+    models = Models(ranker, multiplicity, prior, calibrator, calibrator_kind)
 
-        if not candidates:
+    for record in records:
+        if ranker is None:
             d = decide(confidence=None, amount_minor=record.amount_minor, config=gcfg)
-            audit.record(record.record_id, d, keys=[], n_candidates=0, path="blocked")
-            result.no_candidate += 1
-            result.exceptions["no_candidate"] += 1
+            audit.record(record.record_id, d, keys=[], n_candidates=0,
+                         path="no_ranker")
+            result.queued += 1
+            result.exceptions["no_ranker"] += 1
             continue
 
-        # does this record look like it spans several keys?
-        if multiplicity is not None and mult_features is not None:
-            p_mult = float(multiplicity.predict_proba(mult_features[i : i + 1])[0])
-            if p_mult >= mult_threshold:
-                d = decide(confidence=None, amount_minor=record.amount_minor, config=gcfg)
-                audit.record(record.record_id, d, keys=[], n_candidates=n,
-                             path="multiplicity",
-                             evidence={"p_multiple": round(p_mult, 4)})
-                result.suspected_multiple += 1
-                result.exceptions["suspected_multiple"] += 1
-                continue
+        # One matching path. This file used to carry its own copy, which fell
+        # behind on calibration, the single-candidate case, the grouping
+        # override, and a record that could leave the audit trail entirely.
+        try:
+            r = match_one(record, index=key_index, key_stats=key_stats,
+                          models=models, gate=gcfg, mult_threshold=mult_threshold,
+                          blocking=bcfg)
+        except Exception as exc:  # noqa: BLE001
+            # "Degrades rather than halts" has to be true of the models too.
+            # A record that breaks featurising or scoring becomes an exception
+            # with a reason, not the end of the batch.
+            d = decide(confidence=None, amount_minor=record.amount_minor, config=gcfg)
+            audit.record(record.record_id, d, keys=[], n_candidates=0,
+                         path="model_error", evidence={"error": type(exc).__name__})
+            result.queued += 1
+            result.exceptions["model_error"] += 1
+            continue
 
-        if ranker is not None:
-            # Score and selection must index the SAME list. Building X from the
-            # filtered candidates and then reading `candidates[order[0]]` shifts
-            # every position after the first key missing from key_stats, so the
-            # model's score for one key is attributed to another and a correct
-            # ranking still picks the wrong ledger entry.
-            scored = [k for k in candidates if k in key_stats]
-            if not scored:
-                result.exceptions["no_candidate"] += 1
-                continue
-            X = np.vstack([featurise(record, key_stats[k], n_candidates=len(scored))
-                           for k in scored])
-            scores = ranker.score(X)
-            order = np.argsort(-scores)
-            chosen = scored[int(order[0])]
-            margin = float(scores[order[0]] - scores[order[1]]) if len(order) > 1 else 1.0
-            confidence = float(1.0 / (1.0 + np.exp(-margin)))
-            path = "ranked"
-            evidence = {"margin": round(margin, 4), "n_scored": len(scores)}
-        else:
-            chosen, confidence = _fallback_choice(record, candidates, key_stats)
-            path = "fallback_rules"
-            evidence = {"note": "no ranker available; deterministic rules used"}
+        audit.record(record.record_id, r["decision"], keys=r["keys"],
+                     n_candidates=r["n_candidates"], path=r["path"],
+                     evidence=r["evidence"])
 
-        d = decide(confidence=confidence, amount_minor=record.amount_minor, config=gcfg)
-        audit.record(record.record_id, d, keys=[chosen] if chosen else [],
-                     n_candidates=n, path=path, evidence=evidence)
-
-        if d.outcome is Outcome.POST:
+        outcome = r["outcome"]
+        if outcome == "posted":
             result.posted += 1
+        elif outcome == "no_candidate":
+            result.no_candidate += 1
+            result.exceptions["no_candidate"] += 1
+        elif outcome == "suspected_grouped":
+            result.suspected_multiple += 1
+            result.exceptions["suspected_multiple"] += 1
         else:
             result.queued += 1
-            # Ask the gate what it decided rather than assuming every non-POST
-            # is a threshold miss. A record with no confidence at all is
-            # `no_candidate`, and counting it as below_threshold makes the
-            # exception breakdown describe something that did not happen.
-            reason = ("below_threshold" if d.outcome is Outcome.QUEUE
-                      else d.outcome.value)
-            result.exceptions[reason] = result.exceptions.get(reason, 0) + 1
+            result.exceptions["below_threshold"] += 1
 
-    audit.commit()
-    audit.finish_run(run_id)
     result.seconds = time.perf_counter() - started
     return result

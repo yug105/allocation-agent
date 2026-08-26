@@ -38,10 +38,17 @@ so do not push shortly before a demo.
 
 ## Architecture
 
-**One matching path, two callers.** `_match_one()` in `api.py` is the whole
-per-record pipeline. `/api/run` (the BenchRec demo) and `/api/reconcile`
-(uploaded CSVs) both call it. Keep it that way — a separate path for user data
-would make the demo's measured numbers evidence for nothing but the demo.
+**One matching path, three callers.** `match_one()` in `match/engine.py` is the
+whole per-record pipeline. `/api/run`, `/api/reconcile` and `pipeline.run_batch`
+all call it. Keep it that way — this rule was written while `pipeline.py` still
+carried its own copy, and that copy silently fell behind on calibration, the
+single-candidate case, the grouping override, and a record that could leave the
+audit trail. A reviewer found eight defects in it; all eight were fixes that
+existed in the API and had never been carried across.
+
+Without a ranker, `run_batch` queues everything rather than falling back to
+rules. The old fallback returned 0.90 for an exact amount and 0.55 otherwise —
+a different scale from the calibrated model, handed to the same gate.
 
 The four stages, in order, each able to end the record:
 
