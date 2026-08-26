@@ -123,3 +123,52 @@ def test_no_spot_checking_means_correct_decisions_teach_nothing():
              refit=lambda c: seen.extend(c), truth=truth, batch_size=200,
              spot_check_rate=0.0)
     assert seen == []
+
+
+def test_the_placebo_is_wrong_from_the_first_record():
+    """`all_keys` was filled inside the loop before the draw, so record one's
+    pool held only its own correct key and the placebo returned the truth.
+    Measured contamination was 0.101% — small, but a control that is
+    accidentally right is not a control."""
+    import numpy as np
+
+    from allocation_agent.learn.simulate import simulate
+
+    keys = [f"K{i}" for i in range(200)]
+    fed: list[tuple[int, str]] = []
+
+    def decide_batch(rows):
+        return [{"posted": True, "candidates": [keys[r]], "ranked": [keys[r]],
+                 "routed_multiple": False} for r in rows]
+
+    simulate(label="placebo", indices=list(range(200)),
+             decide_batch=decide_batch, refit=fed.extend,
+             truth=lambda i: ([keys[i]], False), batch_size=50,
+             placebo=True, spot_check_rate=1.0,
+             rng=np.random.default_rng(0))
+
+    assert fed, "the placebo fed nothing back"
+    # Every correction should be a key other than the record's own.
+    right = sum(1 for row, key in fed if key == keys[row])
+    assert right == 0, f"{right} of {len(fed)} placebo corrections were the true key"
+
+
+def test_the_first_correction_is_already_corrupted():
+    """The specific cold-start case: the very first draw."""
+    import numpy as np
+
+    from allocation_agent.learn.simulate import simulate
+
+    keys = [f"K{i}" for i in range(60)]
+    fed: list[tuple[int, str]] = []
+
+    def decide_batch(rows):
+        return [{"posted": True, "candidates": [keys[r]], "ranked": [keys[r]],
+                 "routed_multiple": False} for r in rows]
+
+    simulate(label="p", indices=list(range(60)), decide_batch=decide_batch,
+             refit=fed.extend, truth=lambda i: ([keys[i]], False),
+             batch_size=60, placebo=True, spot_check_rate=1.0,
+             rng=np.random.default_rng(1))
+    first_row, first_key = fed[0]
+    assert first_key != keys[first_row]

@@ -2093,3 +2093,52 @@ had to give out loud.
 
 That last one is the same defect as every other in this journal, in a new
 place: a number stated without the population it belongs to.
+
+---
+
+## A control that was occasionally right by accident
+
+Three claims from a review of the scripts. Checking them separated one real
+defect from two that did not apply here.
+
+**The placebo could hand back the truth.** `all_keys.extend(correct_keys)` ran
+at the top of the loop, *before* the placebo drew from it — so on record one the
+pool held exactly that record's own correct key and the control fed back the
+right answer. The placebo is one of this project's headline findings (feeding
+deliberately wrong answers *improved* autonomy, which is what exposed the metric
+as measuring decisiveness rather than correctness), so a contaminated control
+would weaken the conclusion it produced.
+
+Measured before fixing: **2 draws in 1,979, 0.101%**, because the pool grows
+fast enough that the cold-start window is a handful of records. Far too small to
+explain the 3.72 pp the placebo moved. The finding stands.
+
+Fixed anyway, and the first fix was not enough. Pre-seeding the pool from the
+whole run removes the cold start, but a uniform draw still lands on the true key
+about once per `len(pool)` draws — 3 of 200 in a test. The right semantics is
+stronger: **exclude the record's own keys from the draw**, so the placebo is
+wrong by construction rather than wrong on average. A control that is
+accidentally right at any rate is not a control.
+
+**The other two did not apply, and checking said why.**
+
+*"Concurrent workers will trigger `database is locked`."* The container runs
+`uvicorn` with no `--workers`, so there is one. And `AuditLog` already opens
+with `check_same_thread=False` behind an `RLock`, with a four-thread test — a
+bug this journal records hitting in deployment months ago.
+
+*"CaseBase state desynchronises across workers."* `casebase` appears zero times
+in `api.py` and zero times in the engine. It is not on any request path, which
+the architecture audit already reports and the README already states.
+
+**The persistence half was right.** `runs.db` is excluded from git *and* from
+the image, and the free instance's disk is ephemeral, so every deploy starts
+with an empty log. Within a session every guarantee holds; across one, the
+trail is minutes old rather than permanent.
+
+Rather than add Postgres two days before submission — a dependency, a
+migration, and a deploy risk, for a demo whose runs are minutes old — the path
+became configuration. `AUDIT_DB` points the log at a mounted volume without a
+code change, and `/api/health` reports `audit_persistent` so the distinction is
+on the wire instead of in someone's assumption. The README says it plainly
+under Limitations.

@@ -101,7 +101,9 @@ currency.
 **`artifacts/` mixes two kinds of file.** `demo.json`, `models.pkl`,
 `overview.json` and `meta.json` are build inputs, committed, produced by the scripts above and
 loaded once at startup into `_State`. `runs.db` is runtime state — the audit
-log — gitignored and dockerignored. `ARTIFACTS_DIR` overrides the location;
+log — gitignored and dockerignored, so on the free tier it is **ephemeral**:
+every deploy starts empty. `AUDIT_DB` overrides the path for a persistent
+volume; `/api/health` reports `audit_persistent`. `ARTIFACTS_DIR` overrides the location;
 `_State.load()` never raises, it records the failure and serves a 503.
 
 **`models.pkl` couples three things.** It unpickles

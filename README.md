@@ -233,6 +233,17 @@ Stated plainly, because the alternative is being asked about them.
 
 **[APEX-Accounting](https://huggingface.co/datasets/sadcasticme/apex-accounting) was not used.** It is 10 developer tasks scored by rubric, not a labelled reconciliation set — a good benchmark for a coding agent and the wrong shape for measuring match precision against ground truth. Named here because it is the obvious dataset to ask about.
 
+**The audit log does not survive a redeploy on the free tier.** `runs.db` is
+excluded from git and from the image, and the free instance's disk is
+ephemeral, so every deploy starts with an empty log and a spin-down discards
+it. Within a session the guarantees hold — append-only enforced by the
+database, a `failed` status on a run that stops halfway — but the trail is
+minutes old, not permanent. `AUDIT_DB` points it at a mounted volume or another
+path without a code change, and `/api/health` reports `audit_persistent` so the
+distinction is visible rather than assumed. Concurrency is not the issue people
+expect: the container runs a single worker and the log is already
+thread-safe with a lock and a four-thread test.
+
 **The free LLM's prose is worse than the templates it replaces.** The architecture is sound; the output is not yet an improvement. Templates are the default and the model is the optional upgrade — the reverse of what the design assumed.
 
 **The learning loop is an offline experiment, not a live feature.** `scripts/run_learning.py` produces the −71% result above with all its controls, and it is real. But no API path touches it: a reviewer correcting a decision in the deployed demo does not retrain anything. The architecture diagram draws learning as a layer of the running system; today it is a script.

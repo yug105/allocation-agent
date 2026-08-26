@@ -1506,3 +1506,29 @@ def test_health_reports_what_the_models_were_trained_against(client):
     assert body["models_loaded"] is True
     assert body["feature_version"]
     assert body["calibrator"] in {"isotonic", "platt"}
+
+
+# --------------------------------------------------------------------------- #
+# The audit log's durability is a deploy property, not a code one, and the
+# difference is worth surfacing. `runs.db` is excluded from git and from the
+# image, so on the free tier every deploy starts with an empty log and a
+# spin-down discards it. That is acceptable for a demo whose runs are minutes
+# old; claiming a permanent trail while shipping an ephemeral one is not.
+# --------------------------------------------------------------------------- #
+
+def test_health_says_whether_the_audit_log_survives_a_restart(client):
+    body = client.get("/api/health").json()
+    assert "audit_persistent" in body
+    assert body["audit_persistent"] is False, "no AUDIT_DB set in this environment"
+
+
+def test_the_audit_location_is_a_deploy_setting(tmp_path, monkeypatch):
+    """Pointing at a mounted volume or another path must not need a code edit."""
+    import allocation_agent.api as api_mod
+    monkeypatch.setenv("AUDIT_DB", str(tmp_path / "elsewhere.db"))
+    c = TestClient(api_mod.create_app())
+    body = c.get("/api/health").json()
+    assert body["audit_db"].endswith("elsewhere.db")
+    assert body["audit_persistent"] is True
+    c.post("/api/run", json={"limit": 5})
+    assert (tmp_path / "elsewhere.db").exists(), "wrote to the default path instead"

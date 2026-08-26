@@ -133,7 +133,34 @@ def simulate(
     """
     rng = rng or np.random.default_rng(0)
     result = SimulationResult(label=label)
-    all_keys: list[str] = []
+
+    # The placebo draws a wrong key from the keys seen so far. Those were
+    # collected inside the loop, *before* the draw, so on record one the pool
+    # held exactly that record's own correct key and the control handed back
+    # the truth. The pool grows fast enough that the measured contamination is
+    # 2 draws in 1,979 (0.101%) -- too small to explain the 3.72 pp the placebo
+    # moved -- but a control that is right by accident at all is not a control.
+    # Seeding from the whole run's keys makes it wrong from the first record.
+    all_keys: list[str] = [k for i in indices for k in truth(i)[0]]
+    rng.shuffle(all_keys)
+
+    def wrong_key(correct: list[str]) -> str | None:
+        """A key that is definitely not this record's answer.
+
+        Drawing uniformly from every key seen is not enough: it lands on the
+        true one about once in every `len(pool)` draws, so the control is
+        occasionally right by accident. Excluding the record's own keys makes
+        it wrong by construction, which is what a placebo has to be.
+        """
+        if not all_keys:
+            return None
+        banned = set(correct)
+        for _ in range(8):
+            pick = str(rng.choice(all_keys))
+            if pick not in banned:
+                return pick
+        remaining = [k for k in all_keys if k not in banned]
+        return str(rng.choice(remaining)) if remaining else None
 
     for b, start in enumerate(range(0, len(indices), batch_size)):
         chunk = list(indices[start : start + batch_size])
@@ -149,7 +176,6 @@ def simulate(
 
         for row, d in zip(chunk, decisions, strict=False):
             correct_keys, truly_multiple = truth(row)
-            all_keys.extend(correct_keys)
 
             dg = diagnose(
                 correct_keys=correct_keys,
@@ -167,12 +193,12 @@ def simulate(
                 if (spot_check_rate > 0 and d["posted"] and correct_keys
                         and rng.random() < spot_check_rate):
                     key = correct_keys[0]
-                    if placebo and all_keys:
+                    if placebo:
                         # The control must corrupt *everything* fed back. An
                         # earlier version corrupted only the corrections, so the
                         # placebo arm still received genuine easy examples -- and
                         # improved, which made the control useless.
-                        key = str(rng.choice(all_keys))
+                        key = wrong_key(correct_keys) or key
                     corrections.append((row, key))
                 continue
             loci[dg.locus.value] = loci.get(dg.locus.value, 0) + 1
@@ -181,8 +207,8 @@ def simulate(
             # Blocking and threshold failures are settings, handled by rule proposal.
             if dg.locus in (FailureLocus.RANKING, FailureLocus.MULTIPLICITY) and correct_keys:
                 key = correct_keys[0]
-                if placebo and all_keys:
-                    key = str(rng.choice(all_keys))  # a plausible but wrong answer
+                if placebo:
+                    key = wrong_key(correct_keys) or key   # plausible, and wrong
                 corrections.append((row, key))
 
         result.batches.append(

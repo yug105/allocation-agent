@@ -214,7 +214,14 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Allocation Agent", version="0.1.0")
     state = _State()
     state.load()
-    audit = AuditLog(ARTIFACTS / "runs.db")
+    # AUDIT_DB overrides the location so a persistent disk or volume is a
+    # deploy setting rather than a code change. Left unset it writes beside the
+    # artifacts, which on the free tier is **ephemeral**: the file is excluded
+    # from both git and the image, so every deploy starts with an empty log and
+    # a spin-down discards it. Fine for a demo whose runs are minutes old;
+    # stated on /api/health rather than left for someone to discover.
+    audit_path = Path(os.environ.get("AUDIT_DB") or (ARTIFACTS / "runs.db"))
+    audit = AuditLog(audit_path)
     # Templates by default -- no key, no cost, no network on any path. A key in
     # the environment switches on the model backend, which was previously
     # impossible: `openrouter.py` read OPENROUTER_API_KEY and nothing ever
@@ -237,6 +244,8 @@ def create_app() -> FastAPI:
     def health() -> dict:
         return {"ok": True, "models_loaded": state.ready,
                 "feature_version": len(state.bundle_meta.get("feature_names", [])),
+                "audit_db": str(audit_path),
+                "audit_persistent": bool(os.environ.get("AUDIT_DB")),
                 "calibrator": state.bundle_meta.get("calibrator", "none"),
                 "n_demo_records": len(state.records), "error": state.error}
 
