@@ -107,10 +107,10 @@ flowchart TB
 | 2.3 | Identity resolver | store + **LLM** | Resolve counterparty identity across 5 layers | Merge entities on fuzzy evidence alone |
 | 2.4 | History table | store | Per-payer aggregates | — |
 | 2.5 | State store | store | Cases, aliases, training queue, audit log | — |
-| 3.1 | Direct key | rules | Exact identifier match | Fuzzy anything |
+| 3.1 | Direct key | rules | Lone exact-**amount** match, at a measured 0.9898 | Overrule the gate |
 | 3.2 | Blocker | rules | Cut candidate space ~3400× | Score or rank |
 | 3.3 | Ranker | **GBDT** | Score candidates, calibrated probability | Commit a match |
-| 3.4 | Multiplicity detector | **GBDT** | Binary: one key or several | Decide which keys |
+| 3.4 | Multiplicity detector | **GBDT** | Binary: one key or several, above `MULT_THRESHOLD` | Overrule a lone exact amount |
 | 3.5 | Group solver | rules | Find the *smallest* subset summing to target, and prove it unique | Break a tie |
 | 4.1 | Confidence gate | rules | Post / queue, threshold scaled by amount | Override on model confidence alone |
 | 4.2 | Residual diagnoser | rules | Compute what each cause predicts, rank by fit | Guess |
@@ -167,7 +167,10 @@ sequenceDiagram
             DK-->>GT: match, confidence 1.0
         else miss
             DK->>BL: narrow candidates
-            BL-->>RK: ~30 keys
+            BL-->>RK: ~44 keys
+            alt exactly one candidate matches the amount
+                RK-->>GT: that key, confidence 0.9898 (grouping check skipped)
+            end
             RK-->>MD: ranked + probabilities
             alt single key
                 MD-->>GT: top key + confidence
@@ -319,6 +322,39 @@ currently measured in nanoseconds, plus a service to deploy and keep alive.
 
 **Position to state plainly:** *we use the graph formulation and graph algorithms; we do not
 use a graph database, because at 190k nodes in one process there is nothing to distribute.*
+
+## A7b. What the page shows before anything is pressed
+
+A visitor scans the top of the page for about thirty seconds and forms an
+opinion. So the first surface is a **result**, not an invitation to press
+something: `/api/overview` serves `artifacts/overview.json`, precomputed over
+the whole held-out set by `scripts/export_overview.py`.
+
+It is not computed at startup — 4,000 records take ~90s on the deployed free
+instance and the health check would fail before the container was ready. A test
+pins it against a live run, because a cached figure that drifts from what the
+buttons produce is worse than no figure.
+
+**Everything is reported in value, not counts.** Reconciliation is worked by
+amount at risk, so the queue is ordered biggest-first and every tile carries a
+money figure. Totals sum over *all* exceptions, never over the 100 the payload
+returns. The headline it produces:
+
+| | |
+|---|---|
+| reconciled unattended | 76,469,898.05 — 79.4% of records, 99.3% of them right |
+| still needs a person | 17,904,105.92 — 19.0% of the value |
+| **of that queue** | **87% is one payment covering several entries** |
+
+The last row is the argument for the project. Amounts are BenchRec's obfuscated
+units and the page says so rather than implying a currency.
+
+**Exception aging is conditional.** `_aging()` refuses below a 60-day span and
+states why. The held-out set covers 27 days and the auto-post rate across weekly
+buckets is 74.9 / 80.2 / 81.3 / 80.0 — flat. Aging counts how long an item has
+sat unresolved in a *running* book; a one-month snapshot resolved in a single
+batch has nothing to age. An uploaded ledger spanning months does, and gets the
+chart.
 
 ## A8. Deployment — three ways in
 
@@ -642,14 +678,38 @@ CREATE INDEX idx_sit ON patterns(situation_hash);
 
 ### B4.1 Direct key
 
+> **Revised after measurement.** The design specified a *reference* match —
+> confidence 1.0 on a shared identifier. BenchRec's reference fields are 0%
+> populated, so there is nothing to look up. What ships matches on **amount**
+> instead, and the confidence is measured rather than asserted.
+
 ```python
-def direct_key(rec: Record, idx: RefIndex) -> AllocationKey | None:
-    for ref in rec.references:
-        if (k := idx.by_reference.get(ref)):
-            return k
-    return None
+exact = [k for k in usable if rec.amount_minor in key_stats[k].amounts]
+if len(exact) == 1:
+    # DIRECT_CONFIDENCE = 0.9898, and the grouping check is skipped.
 ```
-Complexity O(|refs|). Confidence 1.0.
+
+**One candidate whose amount is exactly the record's is direct evidence**, and
+it runs *before* the multiplicity detector rather than after. On the held-out
+set that entry is the right answer **98.98% of the time** (2,321 of 2,345),
+which is where `DIRECT_CONFIDENCE` comes from — not 1.0, because 1.0 was never
+measured.
+
+It also **overrules the grouping check**, which is the ordering the first
+version got wrong. On records with a lone exact-amount match the detector fires
+41 times and is wrong on 36 — **12.2% precision against 96.3% overall**. A
+single entry accounting for the whole amount defeats the premise of the grouped
+path, and the detector has no feature that can see it.
+
+The result is still put to the gate, so an amount large enough goes to a person
+on this evidence anyway.
+
+**With no runner-up there is no margin.** A lone candidate that does *not* match
+the amount yields `confidence=None` and is queued. The first version substituted
+`margin=1.0` there — `sigmoid(1.0) = 73.1%`, a constant dressed as a
+measurement, permanently under the 85% base bar, so a lone candidate could never
+post however exact the match. Blocking never returns fewer than four candidates
+on BenchRec, so no test reached it and every small uploaded file did.
 
 ### B4.2 Blocker
 
@@ -1231,6 +1291,7 @@ Things I picked a default for. Change any of these.
 | D2 | Blocking strategy | account + date bucket + amount band | LSH · sorted-neighbourhood · learned blocking |
 | D3 | Threshold curve | log in amount | step function · learned from cost matrix · **conformal prediction sets** |
 | D4 | Situation hash fields | payer + reason + residual bucket + missing + candidate count | tighter, looser, or learned |
+| D4b | Grouping cut | `MULT_THRESHOLD = 0.7`, owned in `api.py` | tune per book · learn from cost |
 | D5 | Group solver bounds | 64 candidates, subsets ≤ 8, ties refused | higher cap · rank ties on a second signal · ILP fallback |
 | D6 | Multiplicity model | separate classifier | joint model with ranker · threshold on score margin only |
 | D7 | Storage | DuckDB | SQLite · Postgres · Parquet + Polars |

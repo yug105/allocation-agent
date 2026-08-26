@@ -1036,3 +1036,40 @@ def test_only_unresolved_records_are_aged(client):
     aged = sum(b["count"] for b in body["aging"]["buckets"])
     s = body["summary"]
     assert aged == s["queued"] + s["suspected_grouped"] + s["no_candidate"]
+
+
+# --------------------------------------------------------------------------- #
+# Working the queue.
+#
+# Each exception already says why it stopped. The question a reviewer actually
+# has is which of 824 to open first, and how much of the backlog clearing the
+# top few would remove. Measured on the held-out set: the ten largest are 12%
+# of the queue's value, so that answer is worth stating.
+# --------------------------------------------------------------------------- #
+
+def test_each_exception_carries_its_share_of_the_queue(client):
+    body = client.post("/api/run", json={"limit": 500}).json()
+    assert body["exceptions"]
+    for e in body["exceptions"]:
+        assert 0 <= e["share_of_queue"] <= 1
+
+
+def test_the_shares_are_taken_against_the_whole_queue_not_the_returned_page(client):
+    """`exceptions` is capped at 100. Shares computed against that list would
+    sum to 1 while describing a fraction of the backlog."""
+    body = client.post("/api/run", json={"limit": 2000}).json()
+    assert body["n_exceptions"] > len(body["exceptions"])
+    assert sum(e["share_of_queue"] for e in body["exceptions"]) < 0.999
+
+
+def test_the_running_total_says_what_clearing_the_top_n_would_clear(client):
+    body = client.post("/api/run", json={"limit": 500}).json()
+    running = [e["cumulative_share"] for e in body["exceptions"]]
+    assert running == sorted(running), "cumulative share must not decrease"
+    first = body["exceptions"][0]
+    assert first["cumulative_share"] == pytest.approx(first["share_of_queue"])
+
+
+def test_the_page_tells_a_reviewer_where_to_start(client):
+    page = client.get("/").text
+    assert "cumulative_share" in page

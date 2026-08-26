@@ -438,13 +438,21 @@ function renderRun(d){
   which is how a queue is actually worked. Each says why it stopped, so the reviewer
   starts from a reason rather than a blank row.</p>
   <div class=scroll><table>
-  <tr><th>record</th><th class=num>amount</th><th>stopped at</th><th>why</th></tr>
-  ${d.exceptions.slice(0,40).map(e=>{
+  <tr><th>#</th><th>record</th><th class=num>amount</th><th class=num>of queue</th>
+  <th class=num>running</th><th>stopped at</th><th>why</th></tr>
+  ${d.exceptions.slice(0,40).map((e,i)=>{
     const w=SAYS[e.reason]||{t:e.reason,c:''};
-    return `<tr><td>${esc(e.record_id)}</td><td class=num>${money(e.amount)}</td>
+    return `<tr><td class=num>${i+1}</td><td>${esc(e.record_id)}</td>
+     <td class=num>${money(e.amount)}</td>
+     <td class=num>${(e.share_of_queue*100).toFixed(1)}%</td>
+     <td class="num b">${(e.cumulative_share*100).toFixed(1)}%</td>
      <td><span class="tag ${w.c}">${w.t}</span></td>
      <td class=dim>${esc(e.explanation)}</td></tr>`;}).join('')}
-  </table></div>`;
+  </table></div>
+  <p class=faint>“running” is how much of the queue's value is cleared by working
+  down to that row. Clearing the top ten clears
+  <b>${(d.exceptions[9]?d.exceptions[9].cumulative_share*100:100).toFixed(1)}%</b>
+  of ${money(d.queue_value)} — which is why the order matters more than the count.</p>`;
 }
 
 // ── 3. grouped settlements ─────────────────────────────────────────────

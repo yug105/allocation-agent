@@ -284,6 +284,17 @@ def create_app() -> FastAPI:
         # Biggest first: a controller works the queue top-down, and the ten
         # largest are about a tenth of its value. Record order wastes that.
         exceptions.sort(key=lambda e: -abs(e["amount"]))
+        # What a reviewer needs on top of "why it stopped": which to open first,
+        # and how much of the backlog the first few would clear. Shares are
+        # taken against the *whole* queue, not the 100 returned below, or they
+        # would sum to 1 while describing a quarter of it.
+        queue_total = sum(v for k, v in value.items() if k != "posted")
+        running = 0.0
+        for e in exceptions:
+            share = abs(e["amount"]) / queue_total if queue_total else 0.0
+            running += share
+            e["share_of_queue"] = round(share, 6)
+            e["cumulative_share"] = round(running, 6)
 
         return {
             "run_id": run_id,

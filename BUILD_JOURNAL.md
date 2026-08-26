@@ -1643,3 +1643,53 @@ page says why there is no chart; on a year-long upload it draws one.
 
 Adding the chart anyway would have looked more like a finance product and been
 worth nothing, which is the failure mode this whole journal is about.
+
+---
+
+## Which of the 824 do I open first?
+
+Each exception already said why it stopped. That answers a question a reviewer
+does not have. Facing a queue, they want to know **which to open first** and how
+much of the backlog the first few clear.
+
+Every exception now carries its share of the queue's value and a running total:
+
+```
+  # record           amount  of queue  running  stopped at
+  1 b179363      210,500.05      2.9%     2.9%  suspected_grouped
+  2 b179391      176,402.57      2.4%     5.2%  suspected_grouped
+  3 b181079      158,025.92      2.1%     7.4%  suspected_grouped
+  ...
+  clearing the top 10 clears 17.9% of the queue
+  clearing the top 40 clears 44.8%
+```
+
+**Forty of 380 exceptions — a tenth of them — hold 45% of the value.** The
+order is worth more than the count, which is exactly what a queue sorted by
+record id destroys.
+
+The shares are taken against the whole queue rather than the 100 exceptions the
+payload returns; computed against the returned list they would sum to 1 while
+describing a quarter of the backlog. There is a test for that, because this is
+the third time the 100-item cap has nearly produced a wrong number.
+
+One thing fell out of the ordering that no metric had shown: **every one of the
+eight largest exceptions is `suspected_grouped`.** The hero says 87% of the
+queue's value is the grouped case; sorting by size says the same thing again at
+the top of the list, without being asked to.
+
+### The design document had drifted again
+
+Checking before writing: four of eight claims in `DESIGN.md` no longer matched
+the code — the grouping threshold, the direct path, the overview endpoint and
+aging. That is the third drift, and the earlier two were caught by a reviewer
+rather than by me.
+
+The check itself is eight lines of Python comparing strings in the doc against
+strings in the source. It should not be a thing I remember to run. Written down
+here so the next drift is caught by something rather than noticed by someone.
+
+`B4.1 Direct key` was the worst of it: it still described a *reference* match at
+confidence 1.0, which was never built — BenchRec's reference fields are 0%
+populated — while the code matches on amount at a measured 0.9898 and runs
+before the grouping check rather than after.
