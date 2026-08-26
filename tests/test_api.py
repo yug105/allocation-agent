@@ -1073,3 +1073,64 @@ def test_the_running_total_says_what_clearing_the_top_n_would_clear(client):
 def test_the_page_tells_a_reviewer_where_to_start(client):
     page = client.get("/").text
     assert "cumulative_share" in page
+
+
+# --------------------------------------------------------------------------- #
+# A lone exact amount overrules the grouping check. On the held-out set the
+# detector fires 535 times and is overruled on 9 of them -- and those 9 were
+# recorded as ordinary ranked matches, so nothing in the trail said a
+# probabilistic detector had been overridden. An audit log that cannot show
+# that is not showing why the decision was made.
+# --------------------------------------------------------------------------- #
+
+def test_overruling_the_grouping_check_is_recorded_as_evidence(client):
+    """Nine held-out records hit this: the detector fires, a lone exact amount
+    overrules it, and the record posts. Found by scanning the real data rather
+    than staged, because the detector will not fire on a three-row fixture."""
+    from allocation_agent.api import BLOCKING, MULT_THRESHOLD, _p_multiple_with, _State
+    from allocation_agent.match.blocker import block
+
+    state = _State()
+    state.load()
+    target = None
+    for rec in state.records:
+        usable = [k for k in sorted(block(rec, state.index, BLOCKING))
+                  if k in state.key_stats]
+        if not usable:
+            continue
+        exact = [k for k in usable if rec.amount_minor in state.key_stats[k].amounts]
+        if len(exact) == 1 and _p_multiple_with(state, rec, usable,
+                                                state.key_stats) >= MULT_THRESHOLD:
+            target = rec.record_id
+            break
+    assert target, "no record exercises the override"
+
+    body = client.post("/api/run", json={"limit": 4000}).json()
+    trail = client.get(f"/api/run/{body['run_id']}/audit").json()
+    row = next(d for d in trail["decisions"] if d["record_id"] == target)
+    import json as _json
+    evidence = _json.loads(row["evidence"] or "{}")
+    assert evidence.get("overrode_grouping") is True
+    assert evidence.get("exact_amount") is True
+    assert "p_multiple" in evidence, "the overruled probability must be on the record"
+
+
+
+def test_an_ordinary_match_carries_no_override_evidence(client):
+    body = client.post("/api/run", json={"limit": 200}).json()
+    trail = client.get(f"/api/run/{body['run_id']}/audit").json()
+    plain = [d for d in trail["decisions"] if d["path"] == "ranked"]
+    assert plain
+    assert any("overrode_grouping" not in (d["evidence"] or "") for d in plain)
+
+
+def test_the_llm_call_count_is_measured_not_asserted(client):
+    """Reporting a hardcoded 0 answers 'how do you know?' with 'I typed it'."""
+    import inspect
+
+    from allocation_agent import api
+    src = inspect.getsource(api.create_app)
+    assert '"llm_calls_on_matching_path": 0' not in src
+    assert "narrator.calls - llm_before" in src
+    assert client.post("/api/run", json={"limit": 50}).json()[
+        "llm_calls_on_matching_path"] == 0

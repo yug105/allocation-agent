@@ -254,6 +254,11 @@ def create_app() -> FastAPI:
         unresolved: list[tuple[int, float]] = []
         exceptions: list[dict] = []
         posted_correct = 0
+        # Measured, not asserted. "No LLM on the matching path" is the design
+        # claim; this is the counter that would show it false. The narrator
+        # runs after decide(), on queued records only, and writes prose -- it
+        # cannot change which key was chosen.
+        llm_before = narrator.calls
         started = time.perf_counter()
 
         for rec in records:
@@ -305,7 +310,7 @@ def create_app() -> FastAPI:
             "straight_through_rate": summary["posted"] / len(records) if records else 0.0,
             "records_per_second": len(records) / elapsed if elapsed else 0.0,
             "seconds": round(elapsed, 3),
-            "llm_calls_on_matching_path": 0,
+            "llm_calls_on_matching_path": narrator.calls - llm_before,
             "mult_threshold": req.mult_threshold,
             "posted_value": round(value["posted"], 2),
             # Summed over every exception, not over the 100 returned below --
@@ -536,6 +541,7 @@ def create_app() -> FastAPI:
 
         summary = {"posted": 0, "queued": 0, "no_candidate": 0, "suspected_grouped": 0}
         unresolved: list[tuple[int, float]] = []
+        llm_before = narrator.calls
         results = []
         started = time.perf_counter()
 
@@ -567,7 +573,7 @@ def create_app() -> FastAPI:
             "n_ledger_rows": len(rows),
             "summary": summary,
             "seconds": round(time.perf_counter() - started, 3),
-            "llm_calls_on_matching_path": 0,
+            "llm_calls_on_matching_path": narrator.calls - llm_before,
             # 03/01/2026 is the third of January or the first of March. One
             # reading is chosen for the whole file; saying which is the only way
             # the person who wrote it can catch a wrong guess.
@@ -641,6 +647,13 @@ def _match_one(state: _State, rec: BankRecord, index, key_stats, gate,
         margin = float(scores[order[0]] - scores[order[1]])
         confidence = float(1.0 / (1.0 + np.exp(-margin)))
         path, evidence = "ranked", {"margin": round(margin, 4)}
+        # When a lone exact amount kept the grouping check from firing, the
+        # trail has to say so. Without this the record is indistinguishable
+        # from an ordinary match, and a reviewer cannot see that a
+        # probabilistic detector was overridden or on what grounds.
+        if lone_exact and p_mult >= mult_threshold:
+            evidence |= {"exact_amount": True, "overrode_grouping": True,
+                         "p_multiple": round(p_mult, 4)}
     elif lone_exact:
         # No runner-up, so no margin exists. The old code substituted
         # margin=1.0 here, which is sigmoid -> 73.1%: a constant dressed as a
@@ -758,13 +771,6 @@ def _p_multiple_with(state: _State, rec: BankRecord, cands: list[str], key_stats
     return float(state.detector.predict_proba(f.reshape(1, -1))[0])
 
 
-def _p_multiple(state: _State, rec: BankRecord, cands: list[str]) -> float:
-    amts = [a for k in cands for a in state.key_stats[k].amounts if k in state.key_stats]
-    has_exact = rec.amount_minor in amts if amts else False
-    min_delta = min((abs(rec.amount_minor - a) for a in amts), default=1e12)
-    f = featurise_multiplicity(rec, n_candidates=len(cands), has_exact=has_exact,
-                               min_delta_minor=float(min_delta), prior=state.prior)
-    return float(state.detector.predict_proba(f.reshape(1, -1))[0])
 
 
 def _exception(rec: BankRecord, reason: str, explanation: str, n_candidates: int) -> dict:

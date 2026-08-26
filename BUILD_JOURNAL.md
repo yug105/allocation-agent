@@ -1693,3 +1693,76 @@ here so the next drift is caught by something rather than noticed by someone.
 confidence 1.0, which was never built — BenchRec's reference fields are 0%
 populated — while the code matches on amount at a measured 0.9898 and runs
 before the grouping check rather than after.
+
+---
+
+## A review that found a bug I had already fixed everywhere except one file
+
+Fifteen points, and the top one was right.
+
+**Scores and selection indexed different lists.** In `pipeline.py`:
+
+```python
+X = np.vstack([featurise(...) for k in candidates if k in key_stats])
+scores = ranker.score(X)
+chosen = candidates[int(order[0])]      # the unfiltered list
+```
+
+`X` is built from the *filtered* candidates and `chosen` reads the *unfiltered*
+one. Every position after the first key missing from `key_stats` is shifted, so
+a correct ranking still returns the wrong ledger entry.
+
+The live path does not have it — `_match_one` reads `usable[int(order[0])]`,
+and it does so because extracting that function forced the filtered list to be
+named. The bug survived in the file the extraction did not touch. **The fix was
+a side effect of a refactor rather than a decision, which is why it did not
+propagate.**
+
+**A tie was being auto-posted at 90%.** `_fallback_choice` scored candidates on
+`(exact_amount, date_gap)` and returned the best. Three ledger entries of the
+same amount on the same day score identically; it returned whichever sorted
+first and labelled it 0.90. The README says ties are refused and this path did
+the opposite. It now returns `(None, None)` when the top two tie on the
+deciding evidence, and `decide(confidence=None)` cannot post at any amount.
+
+**Every non-POST was counted as `below_threshold`.** A record with no
+confidence at all is `no_candidate`; counting it as a threshold miss makes the
+exception breakdown describe something that did not happen. It now asks the
+gate what it decided.
+
+**`llm_calls_on_matching_path: 0` was a typed constant.** "How do you know
+there were zero?" — "I wrote zero." It is now the narrator's own counter
+measured across the loop.
+
+### The leakage question, which was the one worth being afraid of
+
+> *A temporal split alone doesn't prevent feature-level leakage if statistics
+> were computed globally.*
+
+Correct in general, so I measured rather than reasoned:
+
+```
+keys 5,869   rows per key: median 1
+a key's own date span: median 0d   p90 0d   max 0d
+```
+
+**Every allocation key's rows fall on a single day.** `KeyStats` is therefore
+that key's own rows and never a pooled statistic — there is nothing aggregated
+across records to leak. The one genuine corpus statistic is `AccountPrior`, an
+account's historical MULT rate, which is a summary of the label; both training
+scripts fit it on `sp.train` only, and its docstring says why.
+
+A related finding that is *not* leakage: 100% of records have a candidate key
+dated after them. That is the blocker offering a ±7 day window on purpose,
+because payments and bookings do not align, and this reconciles a period rather
+than making real-time decisions.
+
+### Points I agree with and have not acted on
+
+Calibration is the real one. `sigmoid(top - second)` is a monotone transform of
+a LambdaRank margin, not a probability, and calling it *confidence* while
+comparing it to 0.85 borrows a meaning it has not earned. The end-to-end number
+that matters — 99.3% of what it posts is correct — is measured directly and does
+not depend on the name. But the gate's thresholds are tuned against a quantity
+whose units are arbitrary, and that should be Platt or isotonic on the
+validation split. Recorded rather than done.

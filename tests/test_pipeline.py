@@ -98,3 +98,46 @@ def test_rerun_is_deterministic(audit, tmp_path):
     a = run_batch(records, idx, stats, audit, run_config=cfg())
     b = run_batch(records, idx, stats, AuditLog(tmp_path / "b.db"), run_config=cfg())
     assert (a.posted, a.queued, a.no_candidate) == (b.posted, b.queued, b.no_candidate)
+
+
+def test_a_tie_on_the_deciding_evidence_is_refused_not_posted():
+    """Three ledger entries of the same amount on the same day are a tie, not
+    a match. Returning the first at 0.90 would auto-post an arbitrary pick --
+    the exact behaviour the rest of the system refuses."""
+    from allocation_agent.match.features import KeyStats
+    from allocation_agent.pipeline import _fallback_choice
+    from allocation_agent.types import BankRecord
+
+    rec = BankRecord("b1", "A", 1_000_000, 100)
+    stats = {k: KeyStats(amounts=frozenset({1_000_000}), days=(100,), n_rows=1)
+             for k in ("K1", "K2", "K3")}
+    chosen, confidence = _fallback_choice(rec, ["K1", "K2", "K3"], stats)
+    assert chosen is None
+    assert confidence is None
+
+
+def test_a_clear_winner_is_still_chosen():
+    from allocation_agent.match.features import KeyStats
+    from allocation_agent.pipeline import _fallback_choice
+    from allocation_agent.types import BankRecord
+
+    rec = BankRecord("b1", "A", 1_000_000, 100)
+    stats = {
+        "K1": KeyStats(amounts=frozenset({1_000_000}), days=(100,), n_rows=1),
+        "K2": KeyStats(amounts=frozenset({9_999_999}), days=(100,), n_rows=1),
+    }
+    chosen, confidence = _fallback_choice(rec, ["K1", "K2"], stats)
+    assert chosen == "K1"
+    assert confidence == 0.90
+
+
+def test_scores_and_selection_index_the_same_list():
+    """X is built from candidates present in key_stats; selecting from the
+    unfiltered list shifts every position after the first missing key, so a
+    correct ranking still picks the wrong ledger entry."""
+    import inspect
+
+    from allocation_agent import pipeline
+    src = inspect.getsource(pipeline.run_batch)
+    assert "chosen = scored[int(order[0])]" in src
+    assert "chosen = candidates[int(order[0])]" not in src

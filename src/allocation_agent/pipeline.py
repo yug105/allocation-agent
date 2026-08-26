@@ -76,7 +76,7 @@ def _fallback_choice(record: BankRecord, candidates: list[str],
     value, never a model score, and it is deliberately capped below the
     auto-post threshold for large amounts.
     """
-    best, best_score = None, None
+    scored = []
     for k in candidates:
         st = key_stats.get(k)
         if st is None:
@@ -84,11 +84,21 @@ def _fallback_choice(record: BankRecord, candidates: list[str],
         exact = 0 if record.amount_minor in st.amounts else 1
         gap = (min((abs(record.day - d) for d in st.days), default=999)
                if record.day is not None else 999)
-        score = (exact, gap)
-        if best_score is None or score < best_score:
-            best, best_score = k, score
+        scored.append(((exact, gap), k))
+    scored.sort()
+    best, best_score = (scored[0][1], scored[0][0]) if scored else (None, None)
+
+    # Three ledger entries of the same amount on the same day are not a match,
+    # they are a tie. The rule has nothing left to separate them, so returning
+    # the first and calling it 90% would auto-post an arbitrary pick. Refuse.
+    if len(scored) > 1 and scored[0][0] == scored[1][0]:
+        return None, None
+
     if best is None:
         return None, 0.0
+    # A rule-derived number, not a model score, and it says so at the call site.
+    # 0.90 clears the base bar but not the bar a large amount raises, so the
+    # rules path can post a small exact match and never a large one.
     confidence = 0.90 if best_score[0] == 0 else 0.55
     return best, confidence
 
@@ -139,11 +149,20 @@ def run_batch(
                 continue
 
         if ranker is not None:
-            X = np.vstack([featurise(record, key_stats[k], n_candidates=n)
-                           for k in candidates if k in key_stats])
+            # Score and selection must index the SAME list. Building X from the
+            # filtered candidates and then reading `candidates[order[0]]` shifts
+            # every position after the first key missing from key_stats, so the
+            # model's score for one key is attributed to another and a correct
+            # ranking still picks the wrong ledger entry.
+            scored = [k for k in candidates if k in key_stats]
+            if not scored:
+                result.exceptions["no_candidate"] += 1
+                continue
+            X = np.vstack([featurise(record, key_stats[k], n_candidates=len(scored))
+                           for k in scored])
             scores = ranker.score(X)
             order = np.argsort(-scores)
-            chosen = candidates[int(order[0])]
+            chosen = scored[int(order[0])]
             margin = float(scores[order[0]] - scores[order[1]]) if len(order) > 1 else 1.0
             confidence = float(1.0 / (1.0 + np.exp(-margin)))
             path = "ranked"
@@ -161,7 +180,13 @@ def run_batch(
             result.posted += 1
         else:
             result.queued += 1
-            result.exceptions["below_threshold"] += 1
+            # Ask the gate what it decided rather than assuming every non-POST
+            # is a threshold miss. A record with no confidence at all is
+            # `no_candidate`, and counting it as below_threshold makes the
+            # exception breakdown describe something that did not happen.
+            reason = ("below_threshold" if d.outcome is Outcome.QUEUE
+                      else d.outcome.value)
+            result.exceptions[reason] = result.exceptions.get(reason, 0) + 1
 
     audit.commit()
     audit.finish_run(run_id)
