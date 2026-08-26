@@ -1993,3 +1993,64 @@ precision 99.4470%   STP 76.8500%   posted 3074
 Byte-identical, and the cached hero figures agree with a live run to two
 decimals. No more threshold tuning. The remaining work is the submission, not
 the matcher.
+
+---
+
+## The page was a technical report with a demo bolted on as section 3
+
+A UI review landed on the diagnosis rather than the styling:
+
+> Show the decision first. Show the evidence second. Show the engineering third.
+
+The old page did the reverse. It opened with methodology — what dataset, how the
+pipeline works, how the split was cut — and put the interactive product in
+*section 3*, under a heading called "Try it". A judge scanning for fifteen
+seconds met an explanation of the evaluation before they met the thing being
+evaluated.
+
+Rewritten as a workspace with a sidebar rather than one long document:
+
+```
+Overview      the two numbers, the money split, the four steps
+Reconcile     the product: run it, see what happened
+Exceptions    the work queue, largest first, click for a drawer
+Grouped       the hard case as the equation, not a table
+Your files    upload
+Trust         the methodology, on its own screen
+Audit trail   the decisions as they were recorded
+```
+
+The hero is now **99.4% correct / 76.9% needed no person**, at 3.1rem, with a
+stacked bar splitting the value three ways and the line that is the whole
+argument underneath: 87% of the money awaiting a person is one payment covering
+several entries.
+
+**The queue became a queue.** It was a seven-column table sorted by value with
+`# | record | amount | of queue | running | stopped at | why`. It is now rows a
+reviewer can scan — status chip, id, one-line reason, amount — filterable by
+kind, and clicking one opens a drawer with why it stopped, what it looked at,
+its share of the backlog, and how much clearing down to it would clear:
+
+```
+[Grouped payment ] b179363   210,500.05   11.4% of queue
+[Grouped payment ] b179391   176,402.57    9.5% of queue
+```
+
+**Methodology moved out of the main flow.** Temporal splits, leakage gates,
+calibration, degradation guarantees — all real, all previously competing with
+the product for the same screen. They are now a *Trust & evidence* page, which
+is where a judge who wants them will look and where a judge who does not will
+not trip over them.
+
+Monospace is now for identifiers and timestamps only. Amounts use sans with
+tabular figures — they still align in a column without the whole product
+reading as a terminal, which was the thing making it feel developer-facing.
+
+Every foreground/background pair checked: sixteen combinations, lowest 4.51:1,
+all clearing AA. Tags balanced, 22 JS hooks present, zero external fetches so a
+cold instance has nothing to wait on.
+
+The tests held it honest through the rewrite — no internal enum name on the
+visible page, the record control still clamps before sending, the throughput
+figure still comes from the server, and `straight-through` is still banned as
+jargon. 423 pass unchanged.
