@@ -1936,3 +1936,60 @@ Matching logic is frozen here. Nine failure modes attacked, one real defect
 found — narration could unmake a decision the gate had already made — and the
 headline is unchanged at 99.45% precision, 76.85% straight-through, 4,000 of
 4,000 accounted for.
+
+---
+
+## The architecture audit, and the last mixed-population number
+
+Two things before freezing.
+
+**The blocking report described two populations in one sentence.** `recall`
+counts single-key records, because a grouped one has no single true key to
+find. The candidate statistics were accumulated over *every* record — the
+`sizes.append` sat above the `if is_mult: continue` — and were printed beside
+`n_evaluated` as though they covered the same rows.
+
+They do not:
+
+```
+all records       n=4000  mean 50.3  median 38
+single-key only   n=3593  mean 47.5  median 28
+```
+
+A 36% difference in the median, next to a recall figure computed on the other
+set. The report now carries both, and its one-line form says which is which.
+The counts stay measured over all records deliberately — a grouped record costs
+candidates whether or not it can be scored — but that is now stated rather than
+implied.
+
+**Then the audit that matters more than another algorithm review.** For every
+arrow in the pipeline: is this called, or does the class merely exist? Grepping
+does not answer it — the narrator was imported, constructed, tested, and never
+called. So `scripts/audit_architecture.py` *exercises* each component through a
+live request and asks it to prove it ran:
+
+```
+ingest   csv_upload, leakage gate, temporal split          on path
+match    blocker, multiplicity, ranker, calibrator, solver on path
+decide   gate, narrator, openrouter (opt-in)               on path
+record   audit log, run lifecycle                          on path
+learn    router, casebase, simulate, run_batch             OFFLINE
+```
+
+Thirteen of seventeen exercised by a request. The four that are not are exactly
+the ones the README and CLAUDE.md already label offline, so the documents and
+the running system agree — which is the whole point of running it. It stays in
+the repo so the next component added has something that will notice if it is
+never wired in.
+
+**Frozen here.** Three identical runs of the full held-out set:
+
+```
+precision 99.4470%   STP 76.8500%   posted 3074
+precision 99.4470%   STP 76.8500%   posted 3074
+precision 99.4470%   STP 76.8500%   posted 3074
+```
+
+Byte-identical, and the cached hero figures agree with a live run to two
+decimals. No more threshold tuning. The remaining work is the submission, not
+the matcher.

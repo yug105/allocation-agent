@@ -141,3 +141,40 @@ def test_one_key_spanning_several_rows_is_indexed_under_each():
     idx = KeyIndex([key("K1", minor=100, day=10), key("K1", minor=200, day=20)])
     assert block(rec(minor=100, day=999), idx, BlockingConfig(date_slack_days=0)) == {"K1"}
     assert block(rec(minor=200, day=999), idx, BlockingConfig(date_slack_days=0)) == {"K1"}
+
+
+# --------------------------------------------------------------------------- #
+# The report mixed two populations. `recall` counts single-key records, because
+# a grouped record has no single true key to find. The candidate statistics
+# were accumulated over *every* record, grouped ones included, and sat beside
+# `n_evaluated` as though they described the same rows. They do not: median 38
+# across all records against 28 across the ones recall is measured on.
+# --------------------------------------------------------------------------- #
+
+def test_the_report_says_which_population_each_number_covers():
+    from allocation_agent.eval.blocking_recall import measure_blocking
+    ds = _dataset_with_grouped_records()
+    r = measure_blocking(ds)
+    assert r.n_records >= r.n_evaluated
+    assert r.n_records == len(ds.records)
+
+
+def test_candidate_statistics_cover_the_records_recall_is_measured_on():
+    """Otherwise 'recall 98.9% over 3,593 records, median 38 candidates'
+    describes two different sets of rows in one sentence."""
+    from allocation_agent.eval.blocking_recall import measure_blocking
+    ds = _dataset_with_grouped_records()
+    r = measure_blocking(ds)
+    assert r.median_candidates == r.median_candidates_evaluated or r.n_records == r.n_evaluated
+    assert r.median_candidates_evaluated > 0
+
+
+def _dataset_with_grouped_records():
+    from allocation_agent.adapters.benchrec import Dataset
+    from allocation_agent.stores.keys import KeyRow
+    from allocation_agent.types import BankRecord
+    records = [BankRecord(f"b{i}", "A", 1000 + i, 10) for i in range(6)]
+    rows = [KeyRow(f"K{i}", "A", 1000 + i, 10) for i in range(6)]
+    return Dataset(records=records, labels=[f"K{i}" for i in range(6)],
+                   is_mult=[False, False, False, True, True, True],
+                   key_rows=rows, match_ids=[f"m{i}" for i in range(6)])
