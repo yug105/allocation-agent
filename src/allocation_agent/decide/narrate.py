@@ -23,6 +23,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
 #: Anything that looks like a figure: amounts, counts, identifiers, percentages.
@@ -107,11 +108,35 @@ def diagnose_residual(
     return scored
 
 
+def _as_number(token: str) -> Decimal | None:
+    """A figure's value, or None if it is not one."""
+    try:
+        return Decimal(token.replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return None
+
+
 def validate_numbers(text: str, allowed: set[str]) -> None:
-    """Raise unless every figure in *text* was supplied in the payload."""
-    permitted = set(allowed) | {a.replace(",", "") for a in allowed}
+    """Raise unless every figure in *text* was supplied in the payload.
+
+    Compared by **value**, not by spelling. String matching rejected `1250`
+    against an allowed `1,250.00` — correct, written differently — which fails
+    the model for being right and drops a good sentence.
+
+    The obvious repair is to add trailing-zero-stripped forms to the allowed
+    set. It is a trap: `"1250.00".rstrip(".0")` is `"125"` and
+    `"100.00".rstrip(".0")` is `"1"`, so the guard would begin permitting a
+    figure an order of magnitude out — the exact invention it exists to stop.
+    Comparing values accepts every correct spelling and no incorrect one.
+
+    Signs are ignored on the text side: residuals are stored signed and the
+    sentence usually reads "gap of 636.83".
+    """
+    permitted = {v for v in (_as_number(a) for a in allowed) if v is not None}
+    permitted |= {-v for v in permitted}
     for found in _NUMBER.findall(text):
-        if found in permitted or found.replace(",", "") in permitted:
+        value = _as_number(found)
+        if value is not None and (value in permitted or -value in permitted):
             continue
         raise NarrationError(f"generated figure {found!r} is not in the payload")
 

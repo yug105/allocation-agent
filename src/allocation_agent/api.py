@@ -16,6 +16,7 @@ Three ways in, in order of how many people will use them:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import pickle
@@ -600,7 +601,18 @@ def create_app() -> FastAPI:
         results = []
         started = time.perf_counter()
 
-        try:
+        def work() -> None:
+            """The matching loop, off the event loop.
+
+            This endpoint is `async def` because it awaits the uploads, and
+            everything after that is CPU-bound: blocking, featurising and
+            scoring up to 20,000 rows. Running it inline stalls every other
+            request for the duration. It is also where the narrator runs, and
+            with a key configured that reaches a synchronous HTTP call with a
+            long timeout -- so one slow model response would freeze the server
+            rather than one request. `/api/run` never had the problem because a
+            sync endpoint is already dispatched to a worker thread.
+            """
             for rec in records:
                 # calibrated=False: the calibrator and DIRECT_CONFIDENCE were both
                 # measured on BenchRec. Sharing a code path with this file does not
@@ -627,6 +639,9 @@ def create_app() -> FastAPI:
                     "residual_cause": r["residual_cause"],
                     "explanation": r["explanation"],
                 })
+
+        try:
+            await asyncio.to_thread(work)
         except Exception as exc:  # noqa: BLE001
             audit.commit()
             audit.fail_run(run_id, f"{type(exc).__name__}: {exc}")

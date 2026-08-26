@@ -2142,3 +2142,54 @@ became configuration. `AUDIT_DB` points the log at a mounted volume without a
 code change, and `/api/health` reports `audit_persistent` so the distinction is
 on the wire instead of in someone's assumption. The README says it plainly
 under Limitations.
+
+---
+
+## A suggested fix that would have broken the guard it was fixing
+
+Two implementation risks raised, both real, and the first came with a repair I
+had to decline.
+
+**The hallucination guard rejected correct arithmetic.** `validate_numbers`
+compared strings, so a model writing `1250` against an allowed `1,250.00` was
+refused — the right number, spelled differently. Harmless in effect, since it
+degrades to the template, but it fails the model for being right and throws away
+a good sentence.
+
+The proposed fix was to add trailing-zero-stripped forms to the allowed set.
+That is a trap, and worth recording precisely because it looks obviously
+correct:
+
+```
+"1,250.00".rstrip(".0")  ->  "1,25"
+"1250.00".rstrip(".0")   ->  "125"
+"100.00".rstrip(".0")    ->  "1"
+```
+
+`rstrip` takes a *set of characters*, not a suffix. Applying it would have
+taught the guard to accept **125** for an amount of 1,250.00, and **1** for
+100.00 — an invented figure an order of magnitude out, admitted by the very
+check that exists to stop invented figures. A weakened guard is worse than a
+strict one, because the strict one fails loudly.
+
+Comparing by value instead accepts every correct spelling and no incorrect one.
+`1250`, `1250.0` and `1,250` all pass against `1,250.00`; `125`, `1` and `1251`
+all still raise. Signs are matched either way, since residuals are stored signed
+and a sentence reads "gap of 636.83".
+
+**The upload endpoint was doing CPU work on the event loop.** `/api/reconcile`
+is `async def` because it awaits the uploads, and everything after that —
+blocking, featurising and scoring up to 20,000 rows — ran inline. Every other
+request waited. With an API key configured it is also where the narrator
+reaches a synchronous `urlopen` with a 45-second timeout, so one slow model
+response would have frozen the server rather than one request.
+
+`/api/run` never had this: a sync endpoint is already dispatched to a worker
+thread by FastAPI, which is why the problem existed on exactly one of two
+otherwise identical paths. The loop now runs under `asyncio.to_thread`, with a
+test that holds a 4,000-row reconcile in flight on one thread and asserts the
+health check still answers.
+
+That second one is the better catch of the two: the LLM was the visible symptom,
+and the CPU-bound loop underneath it would have stalled the demo with no key
+configured at all.

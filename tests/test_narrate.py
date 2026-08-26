@@ -188,3 +188,43 @@ def test_the_refusal_says_how_to_override():
 
     with pytest.raises(PaidModelRefused, match="ALLOW_PAID_LLM"):
         OpenRouterBackend(api_key="k", model="anthropic/claude-3-opus")
+
+
+# --------------------------------------------------------------------------- #
+# The guard was comparing strings, so a correct figure written differently was
+# rejected: "1250" against an allowed "1,250.00". Harmless in effect — it falls
+# back to the template — but it fails the model for being right.
+#
+# The tempting fix is to strip trailing zeros from the allowed set. It is a
+# trap: "1250.00".rstrip(".0") is "125" and "100.00".rstrip(".0") is "1", so
+# the guard would start permitting a figure an order of magnitude out. Compare
+# the values instead.
+# --------------------------------------------------------------------------- #
+
+def test_the_same_amount_written_without_decimals_is_accepted():
+    validate_numbers("a charge of 1250", allowed={"1,250.00"})
+    validate_numbers("a charge of 1250.0", allowed={"1,250.00"})
+    validate_numbers("a charge of 1,250", allowed={"1,250.00"})
+
+
+def test_a_truncated_figure_is_still_rejected():
+    """The exact value `rstrip('.0')` would have let through."""
+    with pytest.raises(NarrationError, match="125"):
+        validate_numbers("a charge of 125", allowed={"1,250.00"})
+    with pytest.raises(NarrationError):
+        validate_numbers("a charge of 1", allowed={"100.00"})
+
+
+def test_a_different_amount_is_still_rejected():
+    with pytest.raises(NarrationError, match=r"1251"):
+        validate_numbers("a charge of 1251", allowed={"1,250.00"})
+
+
+def test_a_negative_gap_matches_its_positive_form():
+    """Residuals are signed; the sentence usually is not."""
+    validate_numbers("gap of 636.83", allowed={"-636.83"})
+
+
+def test_an_unparseable_token_is_refused_rather_than_waved_through():
+    with pytest.raises(NarrationError):
+        validate_numbers("a charge of 9,9,9", allowed={"1,250.00"})

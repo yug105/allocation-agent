@@ -1532,3 +1532,41 @@ def test_the_audit_location_is_a_deploy_setting(tmp_path, monkeypatch):
     assert body["audit_persistent"] is True
     c.post("/api/run", json={"limit": 5})
     assert (tmp_path / "elsewhere.db").exists(), "wrote to the default path instead"
+
+
+def test_the_upload_endpoint_does_not_block_the_event_loop(client):
+    """`/api/reconcile` is async because it awaits the uploads; everything
+    after is CPU-bound, and with a key configured it reaches a synchronous HTTP
+    call. Running that inline stalls every other request. `/api/run` never had
+    the problem — a sync endpoint is already dispatched to a worker thread."""
+    import inspect
+
+    import allocation_agent.api as api_mod
+    src = inspect.getsource(api_mod.create_app)
+    reconcile = src[src.index("async def reconcile"):src.index("_PAGE_PATH")
+                    if "_PAGE_PATH" in src else len(src)]
+    assert "asyncio.to_thread" in reconcile, "the matching loop runs on the event loop"
+
+
+def test_the_server_stays_responsive_while_an_upload_is_matching(client):
+    """A health check must return while a large reconcile is in flight."""
+    import threading
+
+    big = "id,account,amount,date\n" + "".join(
+        f"B{i},A-{i % 9},{100 + i}.00,2026-03-{(i % 28) + 1:02d}\n" for i in range(4000))
+    led = "invoice,account,amount,date\n" + "".join(
+        f"INV-{i},A-{i % 9},{100 + i}.00,2026-03-{(i % 28) + 1:02d}\n" for i in range(4000))
+
+    done = threading.Event()
+    codes: list[int] = []
+
+    def upload():
+        codes.append(client.post("/api/reconcile", files=_pair(big, led)).status_code)
+        done.set()
+
+    t = threading.Thread(target=upload)
+    t.start()
+    assert client.get("/api/health").status_code == 200
+    t.join(timeout=180)
+    assert done.is_set(), "the upload never finished"
+    assert codes == [200]
