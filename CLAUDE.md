@@ -29,6 +29,7 @@ uv run python scripts/train_ranker.py        # retrains; the leakage gate runs h
 uv run python scripts/eval_solver.py         # regenerates the README solver table
 uv run python scripts/run_learning.py        # the learning experiment + its controls
 uv run python scripts/model_diagnostics.py   # train/val/test gap, F1, recall, confusion
+uv run python scripts/calibrate_ranker.py    # refits the calibrator into models.pkl
 ```
 
 Live at https://allocation-agent.onrender.com — free tier, ~45 rec/sec, sleeps
@@ -55,7 +56,10 @@ The four stages, in order, each able to end the record:
    one payment covering several entries?" Fires → `suspected_grouped`, no
    single match is claimed.
 4. **Rank** (`match/ranker.py`) — LightGBM LambdaRank over 12 features.
-   Confidence is the sigmoid of the margin between first and second place;
+   Confidence is an **isotonic calibrator** mapping the first-to-second margin
+   to the measured frequency of being right — `sigmoid(margin)` claimed 74.8%
+   where the truth was 21.5%, and the gate compares against 0.85. It lives in
+   `models.pkl` under `bundle["calibrator"]`;
    with no runner-up there is no margin, so confidence is `None` and the
    record is queued rather than given a fabricated number.
 

@@ -137,6 +137,8 @@ class _State:
         self.prior = None
         self.meta: dict[str, Any] = {}
         self.error: str | None = None
+        self.calibrator = None
+        self.calibrator_kind = "none"
         self.overview: dict[str, Any] = {}
         self.settlements: list[dict] = []
         self.payments: dict[str, dict] = {}
@@ -172,6 +174,11 @@ class _State:
         self.ranker, self.detector, self.prior = (
             bundle["ranker"], bundle["detector"], bundle["prior"]
         )
+        # Maps the ranker's margin to the frequency with which the top
+        # candidate is actually right. Fitted on validation, scored on test:
+        # sigmoid(margin) claimed 74.8% where the truth was 21.5%.
+        self.calibrator = bundle.get("calibrator")
+        self.calibrator_kind = bundle.get("calibrator_kind", "none")
         self.meta = json.loads((ARTIFACTS / "meta.json").read_text())
 
         ov = ARTIFACTS / "overview.json"
@@ -645,8 +652,17 @@ def _match_one(state: _State, rec: BankRecord, index, key_stats, gate,
 
     if len(order) > 1:
         margin = float(scores[order[0]] - scores[order[1]])
-        confidence = float(1.0 / (1.0 + np.exp(-margin)))
-        path, evidence = "ranked", {"margin": round(margin, 4)}
+        # LambdaRank optimises order, not likelihood, so its margin carries no
+        # probability meaning and neither does a sigmoid of it. The calibrator
+        # maps margin to the measured frequency of being right; without one,
+        # fall back to the sigmoid and say so in the evidence.
+        if state.calibrator is not None:
+            confidence = float(np.clip(state.calibrator.predict([margin])[0], 0.0, 1.0))
+        else:
+            confidence = float(1.0 / (1.0 + np.exp(-margin)))
+        path = "ranked"
+        evidence = {"margin": round(margin, 4),
+                    "confidence_from": state.calibrator_kind}
         # When a lone exact amount kept the grouping check from firing, the
         # trail has to say so. Without this the record is indistinguishable
         # from an ordinary match, and a reviewer cannot see that a

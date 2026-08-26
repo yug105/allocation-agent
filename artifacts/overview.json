@@ -1,26 +1,26 @@
 {
   "n_records": 4000,
-  "seconds": 11.7,
+  "seconds": 4.9,
   "blocking_date_slack_days": 7,
   "mult_threshold": 0.7,
   "total_value": 94374003.97,
-  "posted_value": 76469898.05,
-  "queue_value": 17904105.92,
-  "queue_share_of_value": 0.1897143828473295,
+  "posted_value": 75464489.67,
+  "queue_value": 18909514.3,
+  "queue_share_of_value": 0.20036782911119272,
   "counts": {
-    "posted": 3176,
+    "posted": 3074,
     "suspected_grouped": 526,
-    "queued": 298
+    "queued": 400
   },
   "value_by_outcome": {
-    "posted": 76469898.05,
+    "posted": 75464489.67,
     "suspected_grouped": 15581523.14,
-    "queued": 2322582.78
+    "queued": 3327991.16
   },
-  "grouped_share_of_queue": 0.8702765281674564,
-  "precision_of_posted": 0.993073047858942,
-  "straight_through_rate": 0.794,
-  "top10_share_of_queue": 0.11849706204150952,
+  "grouped_share_of_queue": 0.8240044081936049,
+  "precision_of_posted": 0.994469746258946,
+  "straight_through_rate": 0.7685,
+  "top10_share_of_queue": 0.11219663902208205,
   "largest_exception": 281638.12,
-  "median_exception": 7377.32
+  "median_exception": 6454.8
 }

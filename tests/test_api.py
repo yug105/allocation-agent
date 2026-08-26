@@ -1134,3 +1134,48 @@ def test_the_llm_call_count_is_measured_not_asserted(client):
     assert "narrator.calls - llm_before" in src
     assert client.post("/api/run", json={"limit": 50}).json()[
         "llm_calls_on_matching_path"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Calibration.
+#
+# `sigmoid(top - second)` is a monotone transform of a LambdaRank margin.
+# LambdaRank optimises order, not likelihood, so neither the scores nor a
+# sigmoid of their difference carry probability meaning. Measured on test, it
+# claimed 74.8% where the truth was 21.5% and 84.9% where it was 46.0% -- and
+# the gate compares that number against 0.85.
+#
+# An isotonic fit on validation: ECE 0.0920 -> 0.0116, Brier 0.0774 -> 0.0407.
+# End to end it costs 2.55pp of straight-through and removes 23% of the wrong
+# auto-posts, because the gate now means what it says.
+# --------------------------------------------------------------------------- #
+
+def test_a_calibrator_is_loaded_and_used(client):
+    from allocation_agent.api import _State
+    state = _State()
+    state.load()
+    assert state.calibrator is not None
+    assert state.calibrator_kind in {"isotonic", "platt"}
+
+
+def test_the_confidence_source_is_recorded_on_every_ranked_decision(client):
+    """Which scale a number came from decides what it means. A trail that does
+    not say cannot be re-read later."""
+    import json as _json
+    body = client.post("/api/run", json={"limit": 200}).json()
+    trail = client.get(f"/api/run/{body['run_id']}/audit").json()
+    ranked = [d for d in trail["decisions"] if d["path"] == "ranked"]
+    assert ranked
+    for d in ranked:
+        assert _json.loads(d["evidence"])["confidence_from"] in {"isotonic", "platt"}
+
+
+def test_confidence_is_no_longer_the_sigmoid_of_the_margin(client):
+    """The specific failure: sigmoid(margin) never returns below 0.5, because a
+    margin cannot be negative. A real probability can and must."""
+    body = client.post("/api/run", json={"limit": 2000}).json()
+    trail = client.get(f"/api/run/{body['run_id']}/audit").json()
+    conf = [d["confidence"] for d in trail["decisions"]
+            if d["path"] == "ranked" and d["confidence"] is not None]
+    assert conf
+    assert min(conf) < 0.5, "no record scored below 50% — still on the sigmoid scale"

@@ -89,6 +89,52 @@ Ranked by confidence instead of thresholded, it looks better, and this is the nu
 
 Both are true and the first is the honest one, because 0.7 is what runs. PR-AUC 87.2% against a 10.2% positive rate; beats the obvious rule (no exact-amount match) on F1, 76.7% vs 72.2%.
 
+### Is the confidence number a probability?
+
+It was not. `confidence = sigmoid(top_score − second_score)` is a monotone
+transform of a LambdaRank margin, and LambdaRank optimises *order*, not
+likelihood — so neither the scores nor a sigmoid of their difference carry
+probability meaning. The gate was comparing that number against 0.85.
+
+Measured on the held-out split, what it claimed against what happened:
+
+| claimed | actually right | records |
+|---|---|---|
+| 53.7% | **15.7%** | 3,685 |
+| 64.5% | **15.8%** | 1,697 |
+| 74.8% | **21.5%** | 996 |
+| 84.9% | **46.0%** | 832 |
+| 99.6% | 98.4% | 30,182 |
+
+Overconfident by up to 53 points everywhere except the top bucket — which is
+where 81% of records sit, and is why end-to-end precision looked fine while the
+number itself meant nothing.
+
+An isotonic regression fitted on **validation** and scored on **test**:
+
+| | ECE | Brier |
+|---|---|---|
+| sigmoid(margin) | 0.0920 | 0.0774 |
+| Platt | 0.0158 | 0.0419 |
+| **isotonic (shipped)** | **0.0116** | **0.0407** |
+
+It costs straight-through, and that is the correct direction:
+
+| | posted | wrong | precision | straight-through |
+|---|---|---|---|---|
+| sigmoid(margin) | 3,176 | 22 | 99.31% | 79.40% |
+| isotonic | 3,074 | **17** | **99.45%** | 76.85% |
+
+**−2.55pp of straight-through for 23% fewer wrong auto-posts.** The 102 records
+it stopped posting were 95% correct, so in hindsight posting them was fine — the
+point is that the system had no way to know that, because it was posting on a
+number that did not mean anything. Regenerate with
+`uv run python scripts/calibrate_ranker.py`.
+
+The gate's thresholds were tuned against the old scale and have not been
+re-tuned. That should happen on validation, not on the split these figures come
+from.
+
 ### Is either model overfitting?
 
 Same temporal split, comparing what each model scores on data it was fitted on against data it was not:
