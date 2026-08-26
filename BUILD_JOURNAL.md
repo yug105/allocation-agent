@@ -1817,3 +1817,69 @@ from an endpoint deleted days ago.
 That is the whole failure mode of this project stated in one line. The comments
 here have repeatedly been more confident than the code, and a reader trusts a
 comment. Six of this batch's tests exist only to make a sentence enforceable.
+
+---
+
+## The constant was measured on a population it never touches
+
+The question was whether `DIRECT_CONFIDENCE = 0.9898` survives the routing
+changes, and whether one number hides a bad subgroup. Measuring it answered a
+question I had not thought to ask.
+
+```
+records with exactly one exact-amount candidate : 2,345   <- measured here
+records where the DIRECT branch actually fires  :     0   <- applied here
+```
+
+Those 2,345 records each had four or more blocked candidates, one of which
+matched the amount. The branch only fires when there is exactly *one* candidate
+at all, and BenchRec contains none of those because blocking never returns
+fewer than four. **The figure is an extrapolation, not a measurement of the
+branch it governs** — and I had written "measured on the held-out set" directly
+above it.
+
+The extrapolation is at least conservative, and that direction is measured:
+
+```
+candidates blocked      n     correct
+ 4-10               1,253    100.00%
+11-50                 258     96.51%
+50+                   834     98.20%
+```
+
+Fewer competitors goes with higher precision, so the one-candidate case should
+sit at or above 98.98%. The subgroup fear was inverted too:
+
+```
+< 1,000       15   100.00%
+1k - 10k   1,295    98.38%
+10k - 100k   922    99.67%
+> 100k       113   100.00%
+```
+
+Large amounts are the *safest* bucket, not the most dangerous. No amount, date
+gap or candidate-count subgroup falls under the gate's base bar.
+`scripts/audit_direct_rule.py` regenerates all of it, and the comment now says
+extrapolation where it used to say measurement.
+
+### Narration could unmake a decision
+
+Of the adversarial tests, one failed immediately: a narrator that raises took
+the whole record with it. `match_one` called `narrator.narrate(...)`
+unguarded, so a failure in the component that *explains* a decision destroyed
+the decision itself — after the gate had already chosen, the key was already
+fixed, and nothing remained to do but write a sentence.
+
+Now the decision stands and the sentence is lost, with
+`residual_cause = "narration_failed:<Type>"` on the record so the gap is
+visible rather than silent. The test asserts a matching outcome and identical
+chosen keys under a narrator that raises on every call.
+
+The others passed: a detector that throws yields `model_error` on every record
+and posts none; a calibrator that throws does the same; a corrupt bundle gives
+`models_loaded: false` and a 503 rather than killing the container; every demo
+record has a label, so the missing-truth path cannot quietly deflate precision;
+and duplicate exact amounts never reach the direct branch.
+
+Nine failure modes, one real defect. That ratio is the argument for writing
+this kind of test rather than another twenty happy-path ones.

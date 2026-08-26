@@ -26,13 +26,31 @@ from allocation_agent.match.features import featurise
 from allocation_agent.match.multiplicity import featurise_multiplicity
 from allocation_agent.types import BankRecord
 
-# Measured on the BenchRec held-out set: where exactly one candidate matches
-# the amount exactly, it is the right answer 98.98% of the time (2,321 of
-# 2,345). **That figure belongs to that dataset.** Sharing a code path with an
-# uploaded file does not transfer the measurement to it -- the upload may have
-# duplicate ledger amounts, a different date discipline, or another account
-# structure entirely. So it is only asserted as a probability where it was
-# measured, and elsewhere it is a heuristic that says so.
+# Taking the lone exact-amount candidate is right 98.98% of the time on the
+# BenchRec held-out set (2,321 of 2,345).
+#
+# **It is measured on a different population from the one it is applied to.**
+# Those 2,345 records each had four or more blocked candidates, one of which
+# matched the amount. This branch only fires when there is exactly *one*
+# candidate at all -- a case BenchRec contains zero of, because blocking never
+# returns fewer than four there. The figure is an extrapolation, not a
+# measurement of this branch.
+#
+# The direction of that extrapolation is measured, and it is conservative
+# (scripts/audit_direct_rule.py):
+#
+#     candidates blocked      n     correct
+#      4-10               1,253    100.00%
+#     11-50                 258     96.51%
+#     50+                   834     98.20%
+#
+# Fewer competing candidates goes with higher precision, so the one-candidate
+# case should sit at or above 98.98% rather than below it. No amount bucket
+# falls under the gate's base bar either -- above 100k is 100.00% (n=113),
+# which inverts the usual worry that one constant hides a dangerous tail.
+#
+# It is labelled `..._unvalidated` wherever it is used, because an
+# extrapolation is not a measurement.
 DIRECT_CONFIDENCE = 0.9898
 
 # On data with no measurement behind it the figure is used unchanged but
@@ -203,12 +221,20 @@ def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
             causes = diagnose_residual(
                 residual_minor=residual_minor, amount_minor=rec.amount_minor,
                 n_lines=stats.n_rows, usual_fee_bps=0)
-            (told,) = narrator.narrate([{
-                "record_id": rec.record_id, "causes": causes,
-                "residual_minor": residual_minor, "amount_minor": rec.amount_minor,
-                "n_lines": stats.n_rows}])
-            residual_cause = told["cause"]
-            expl = f"{expl} {told['sentence']}"
+            try:
+                (told,) = narrator.narrate([{
+                    "record_id": rec.record_id, "causes": causes,
+                    "residual_minor": residual_minor,
+                    "amount_minor": rec.amount_minor, "n_lines": stats.n_rows}])
+            except Exception as exc:  # noqa: BLE001
+                # Narration explains a decision already made; it must not be
+                # able to unmake one. The decision, the chosen key and the
+                # confidence are fixed by this point -- only the sentence is
+                # lost, and the record keeps the one written above it.
+                residual_cause = f"narration_failed:{type(exc).__name__}"
+            else:
+                residual_cause = told["cause"]
+                expl = f"{expl} {told['sentence']}"
 
     return {"stage": "ranking",
             "residual_cause": residual_cause,

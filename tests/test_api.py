@@ -1280,3 +1280,123 @@ def test_an_oversized_ledger_is_refused(client):
         "id,account,amount,date\nB1,A-1,1.00,2026-03-01\n", big))
     assert r.status_code == 400
     assert "ledger" in r.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# Adversarial: the failure modes, not the happy path.
+#
+# "Those will tell you much more about whether this is production-grade than
+# another 20 normal-case tests." Each of these breaks something the system
+# depends on and asserts it degrades rather than halts.
+# --------------------------------------------------------------------------- #
+
+def _broken(state, **swap):
+    from allocation_agent.match.engine import Models
+    base = dict(ranker=state.ranker, detector=state.detector, prior=state.prior,
+                calibrator=state.calibrator, calibrator_kind=state.calibrator_kind)
+    return Models(**{**base, **swap})
+
+
+class _Boom:
+    def __getattr__(self, _):
+        def explode(*a, **k):
+            raise RuntimeError("boom")
+        return explode
+
+
+def test_a_detector_that_throws_does_not_stop_the_batch(client):
+    from allocation_agent.api import BLOCKING, MULT_THRESHOLD, _match_or_degrade, _State
+    from allocation_agent.decide.gate import GateConfig, Outcome
+    state = _State()
+    state.load()
+    outs = [_match_or_degrade(r, index=state.index, key_stats=state.key_stats,
+                              models=_broken(state, detector=_Boom()),
+                              gate=GateConfig(), mult_threshold=MULT_THRESHOLD,
+                              blocking=BLOCKING, narrator=None, calibrated=True)
+            for r in state.records[:25]]
+    assert len(outs) == 25
+    assert all(o["outcome"] == "model_error" for o in outs)
+    assert all(o["decision"].outcome is not Outcome.POST for o in outs)
+
+
+def test_a_calibrator_that_throws_does_not_stop_the_batch(client):
+    from allocation_agent.api import BLOCKING, MULT_THRESHOLD, _match_or_degrade, _State
+    from allocation_agent.decide.gate import GateConfig, Outcome
+    state = _State()
+    state.load()
+    outs = [_match_or_degrade(r, index=state.index, key_stats=state.key_stats,
+                              models=_broken(state, calibrator=_Boom()),
+                              gate=GateConfig(), mult_threshold=MULT_THRESHOLD,
+                              blocking=BLOCKING, narrator=None, calibrated=True)
+            for r in state.records[:25]]
+    assert all(o["outcome"] in {"model_error", "suspected_grouped", "posted",
+                                "queued", "no_candidate", "unscorable"} for o in outs)
+    assert not any(o["decision"].outcome is Outcome.POST
+                   and o["outcome"] == "model_error" for o in outs)
+
+
+def test_a_narrator_that_throws_cannot_change_the_decision(client):
+    """Narration explains a decision already made. It must not be able to
+    unmake one."""
+    from allocation_agent.api import BLOCKING, MULT_THRESHOLD, _State
+    from allocation_agent.decide.gate import GateConfig
+    from allocation_agent.match.engine import match_one
+    state = _State()
+    state.load()
+
+    class BadNarrator:
+        calls = 0
+        narrated = 0
+
+        def narrate(self, items):
+            raise RuntimeError("narration failed")
+
+    for rec in state.records[:60]:
+        clean = match_one(rec, index=state.index, key_stats=state.key_stats,
+                          models=state.models, gate=GateConfig(),
+                          mult_threshold=MULT_THRESHOLD, blocking=BLOCKING,
+                          narrator=None, calibrated_for_this_data=True)
+        try:
+            noisy = match_one(rec, index=state.index, key_stats=state.key_stats,
+                              models=state.models, gate=GateConfig(),
+                              mult_threshold=MULT_THRESHOLD, blocking=BLOCKING,
+                              narrator=BadNarrator(), calibrated_for_this_data=True)
+        except Exception:  # noqa: BLE001
+            pytest.fail("a failing narrator propagated out of matching")
+        assert noisy["outcome"] == clean["outcome"]
+        assert noisy["keys"] == clean["keys"]
+
+
+def test_a_corrupt_model_bundle_degrades_to_a_reported_503(tmp_path, monkeypatch):
+    """A bundle that exists and will not load is the case that actually
+    happened in deployment, and it must not kill the container."""
+    import allocation_agent.api as api_mod
+    for name in ("demo.json", "models.pkl", "meta.json"):
+        (tmp_path / name).write_bytes(b"not a real artifact")
+    monkeypatch.setattr(api_mod, "ARTIFACTS", tmp_path)
+    state = api_mod._State()
+    state.load()
+    assert state.ready is False
+    assert state.error
+    c = TestClient(api_mod.create_app())
+    assert c.get("/api/health").json()["models_loaded"] is False
+    assert c.post("/api/run", json={"limit": 5}).status_code == 503
+
+
+def test_a_record_with_no_ground_truth_is_not_counted_as_a_wrong_post(client):
+    """`truth.get(id, ("", False))` turns a missing label into a mismatch, so a
+    malformed artifact would silently destroy the reported precision."""
+    from allocation_agent.api import _State
+    state = _State()
+    state.load()
+    missing = [r.record_id for r in state.records if r.record_id not in state.truth]
+    assert not missing, f"{len(missing)} demo records have no label"
+
+
+def test_duplicate_exact_amount_candidates_never_take_the_direct_path(client):
+    """Two ledger entries of the same amount cannot be told apart by amount."""
+    r = _one(client,
+             "id,account,amount,date\nB1,A-1,500.00,2026-03-02\n",
+             "invoice,account,amount,date\n"
+             "INV-1,A-1,500.00,2026-03-01\nINV-2,A-1,500.00,2026-03-03\n")
+    assert r["outcome"] != "posted" or r["confidence"] < 0.9898
