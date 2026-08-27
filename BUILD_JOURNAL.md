@@ -2193,3 +2193,43 @@ health check still answers.
 That second one is the better catch of the two: the LLM was the visible symptom,
 and the CPU-bound loop underneath it would have stalled the demo with no key
 configured at all.
+
+---
+
+## Putting the reasons to believe above the numbers
+
+The README opened with the finding, then the results, and only reached the
+architectural guards two thirds of the way down under *"What is not an LLM, and
+why"*. So a judge met **99.45%** several screens before anything explaining why
+that figure should be believed — which is the wrong order for a number whose
+whole value is that it was measured honestly.
+
+A *What stops it being wrong* table now sits between the gap and the results.
+Ten claims, each paired with the thing that enforces it rather than the
+intention behind it: outcome columns refused at load, a leakage gate that
+raises inside training, an isotonic calibrator fitted on validation, a
+threshold that rises with the amount, a complete uniqueness test, four model
+failure modes that degrade to review, narration that cannot unmake a decision,
+figures compared by value, an append-only log with a `failed` state, and money
+that never leaves integer minor units.
+
+It opens by saying why the guards exist at all, because the asymmetry is the
+argument: a missed match costs a reviewer ten minutes, a wrong auto-post writes
+a false claim into the ledger, balances, and looks clean.
+
+### A table of claims is exactly the thing this repo gets wrong
+
+Writing ten claims into the most-read part of the project and trusting myself
+would repeat every mistake in this journal. So each was checked mechanically
+against the source before publishing — all fifteen strings present, and the two
+gate figures re-derived: 0.90 posts at 10,000 and queues at 1,000,000.
+
+Then pinned. `test_every_guard_the_readme_promises_still_exists` maps each row
+to the code that has to exist for it to hold and fails if one is deleted;
+two more re-derive the gate thresholds and check the calibration figures the
+table cites still appear in the section that produced them. Delete a guard and
+the suite says which README row became a lie.
+
+That is the smallest version of the rule this project kept relearning: **a
+claim that nothing checks is not a claim** — including a claim written in a
+README about the code enforcing claims.

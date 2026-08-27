@@ -25,6 +25,33 @@ That is the gap this fills.
 
 ---
 
+## What stops it being wrong
+
+Reconciliation fails expensively in one direction. A missed match costs a
+reviewer ten minutes; a wrong auto-post writes a false claim into the ledger,
+balances, and looks clean. Every guard below exists because that asymmetry
+makes "usually right" the wrong target — and each one is enforced by code with
+a test, not asserted in a comment.
+
+| Claim | What enforces it |
+|---|---|
+| The model never sees how a match was resolved | Four outcome columns are refused at load, and a leakage gate raises inside training before a model can reach disk — including a mutual-information check for a label renamed into a feature |
+| No part of a match sits on both sides of the split | The split is by time *and* keeps a settlement's records together |
+| Confidence means what it says | An isotonic calibrator fitted on validation. `sigmoid(margin)` claimed 74.8% where the truth was 21.5%; the gate compares against 0.85 |
+| Bigger amounts must clear a higher bar | The threshold rises with `log10` of the amount — 0.90 posts at 10,000 and queues at 1,000,000 |
+| Two equally good answers are never guessed between | Any rival subset of the same size must omit a member of the one found, so dropping each in turn is a *complete* uniqueness test |
+| A model failure cannot post anything | Ranker, detector, calibrator and narrator were each made to fail on purpose. All four degrade to review; the batch continues |
+| Explanation cannot change a decision | Narration runs after the gate. A narrator that raises loses its sentence, not the decision |
+| No invented figure reaches a reviewer | Every number in generated text must equal one the record carries, compared by value. A lying backend falls back to the template |
+| Every decision is recorded, and a broken run says so | Append-only enforced by database triggers; a run that stops halfway is marked `failed` rather than left looking finished |
+| Money never drifts | Integer minor units throughout. Three decimals are refused, not rounded; a semicolon file's decimal comma is read as a decimal comma |
+
+Nine failure modes were attacked deliberately. **One real defect surfaced** —
+the explanation layer could crash a decision the gate had already made — and it
+was isolated so explanation failure can no longer touch matching.
+
+---
+
 ## Results
 
 Held-out temporal split, test frozen, models trained on earlier records only.
