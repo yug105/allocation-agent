@@ -260,6 +260,18 @@ Stated plainly, because the alternative is being asked about them.
 
 **[APEX-Accounting](https://huggingface.co/datasets/sadcasticme/apex-accounting) was not used.** It is 10 developer tasks scored by rubric, not a labelled reconciliation set — a good benchmark for a coding agent and the wrong shape for measuring match precision against ground truth. Named here because it is the obvious dataset to ask about.
 
+**It is a single-tenant demo, and the limits are the demo's not the design's.**
+Uploads are capped at 10 MB, 20,000 bank rows and 100,000 ledger rows, and the
+whole file is read into memory before parsing — a handful of concurrent large
+uploads would evict the container. The blocking index is a Python `defaultdict`
+of sets, which is fast at this size and would cost gigabytes at millions of
+ledger rows. `/api/reconcile` has no authentication and no rate limit, and its
+matching is CPU-bound, so repeated large uploads would starve the instance.
+None of that is load-bearing for the reconciliation logic — it is the API layer
+assuming one user at a time, which for a judged demo it has. At real volume the
+index belongs in a store rather than a dict, parsing should stream, and the
+heavy work belongs on a queue behind a rate limit.
+
 **The audit log does not survive a redeploy on the free tier.** `runs.db` is
 excluded from git and from the image, and the free instance's disk is
 ephemeral, so every deploy starts with an empty log and a spin-down discards

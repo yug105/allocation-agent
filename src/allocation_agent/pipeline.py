@@ -107,7 +107,7 @@ Without a ranker every record is queued. This used to fall back to a rules
         if ranker is None:
             d = decide(confidence=None, amount_minor=record.amount_minor, config=gcfg)
             audit.record(record.record_id, d, keys=[], n_candidates=0,
-                         path="no_ranker")
+                         path="no_ranker", run_id=run_id)
             result.queued += 1
             result.exceptions["no_ranker"] += 1
             continue
@@ -125,14 +125,15 @@ Without a ranker every record is queued. This used to fall back to a rules
             # with a reason, not the end of the batch.
             d = decide(confidence=None, amount_minor=record.amount_minor, config=gcfg)
             audit.record(record.record_id, d, keys=[], n_candidates=0,
-                         path="model_error", evidence={"error": type(exc).__name__})
+                         path="model_error", evidence={"error": type(exc).__name__},
+                         run_id=run_id)
             result.queued += 1
             result.exceptions["model_error"] += 1
             continue
 
         audit.record(record.record_id, r["decision"], keys=r["keys"],
                      n_candidates=r["n_candidates"], path=r["path"],
-                     evidence=r["evidence"])
+                     evidence=r["evidence"], run_id=run_id)
 
         outcome = r["outcome"]
         if outcome == "posted":

@@ -1570,3 +1570,35 @@ def test_the_server_stays_responsive_while_an_upload_is_matching(client):
     t.join(timeout=180)
     assert done.is_set(), "the upload never finished"
     assert codes == [200]
+
+
+def test_two_simultaneous_runs_do_not_corrupt_each_others_audit_trails(client):
+    """The service shares one AuditLog. Before run_id was passed explicitly,
+    four concurrent writers left three of them with an IntegrityError and no
+    rows at all — the audit trail destroyed rather than the answer."""
+    import threading
+
+    results: dict[int, dict] = {}
+    errors: list[str] = []
+
+    def run(i: int) -> None:
+        try:
+            results[i] = client.post("/api/run", json={"limit": 120}).json()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{i}: {type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=180)
+
+    assert not errors, errors
+    assert len(results) == 3
+    ids = {r["run_id"] for r in results.values()}
+    assert len(ids) == 3, "runs shared an id"
+    for body in results.values():
+        trail = client.get(f"/api/run/{body['run_id']}/audit").json()
+        assert len(trail["decisions"]) == body["n_records"], \
+            "a concurrent run lost or gained decisions"
+        assert trail["run"]["status"] == "completed"

@@ -284,3 +284,75 @@ def test_an_older_database_without_the_column_still_opens(tmp_path):
 
     log = AuditLog(path)
     assert log.get_run("old1")["status"] in {"completed", "unknown"}
+
+
+# --------------------------------------------------------------------------- #
+# One AuditLog is shared by the whole service and `_run_id` was a single
+# mutable slot. Two overlapping requests meant the second start_run overwrote
+# the first, so one batch's decisions landed under the other's run — and when
+# the first finish_run cleared the slot, the batch still going inserted a NULL
+# and died. Measured with four concurrent writers before the fix: three raised
+# IntegrityError and lost every row they had written.
+#
+# For a system whose central claim is a complete audit trail, that is the worst
+# available failure: it destroys the evidence rather than the answer.
+# --------------------------------------------------------------------------- #
+
+def test_concurrent_runs_keep_their_own_decisions(tmp_path):
+    import threading
+
+    log = AuditLog(tmp_path / "concurrent.db")
+    d = decide(confidence=0.99, amount_minor=100, config=GateConfig())
+    errors: list[str] = []
+    runs: dict[str, str] = {}
+
+    def writer(name: str) -> None:
+        try:
+            run_id = log.start_run(run_cfg())
+            runs[name] = run_id
+            for i in range(40):
+                log.record(f"{name}-{i}", d, keys=["K"], n_candidates=1,
+                           path="ranked", run_id=run_id)
+            log.finish_run(run_id)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{name}: {type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=writer, args=(f"user{u}",)) for u in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    log.commit()
+
+    assert not errors, errors
+    assert len(runs) == 4
+    for name, run_id in runs.items():
+        rows = log.decisions(run_id=run_id)
+        assert len(rows) == 40, f"{name} lost rows"
+        assert all(r["record_id"].startswith(name) for r in rows), \
+            f"{name}'s run contains another run's decisions"
+
+
+def test_finishing_one_run_does_not_break_another_in_flight(tmp_path):
+    """The specific crash: finish_run cleared the shared slot and the batch
+    still going inserted a NULL run_id."""
+    log = AuditLog(tmp_path / "inflight.db")
+    d = decide(confidence=0.99, amount_minor=100, config=GateConfig())
+    a = log.start_run(run_cfg())
+    b = log.start_run(run_cfg())
+    log.record("a1", d, keys=["K"], n_candidates=1, path="ranked", run_id=a)
+    log.finish_run(a)
+    log.record("b1", d, keys=["K"], n_candidates=1, path="ranked", run_id=b)
+    log.commit()
+    assert [r["record_id"] for r in log.decisions(run_id=a)] == ["a1"]
+    assert [r["record_id"] for r in log.decisions(run_id=b)] == ["b1"]
+
+
+def test_a_single_threaded_caller_still_needs_no_run_id(tmp_path):
+    """Scripts have exactly one run; making them name it would be noise."""
+    log = AuditLog(tmp_path / "single.db")
+    run_id = log.start_run(run_cfg())
+    d = decide(confidence=0.99, amount_minor=100, config=GateConfig())
+    log.record("b1", d, keys=["K"], n_candidates=1, path="ranked")
+    log.commit()
+    assert len(log.decisions(run_id=run_id)) == 1

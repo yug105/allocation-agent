@@ -309,7 +309,7 @@ def create_app() -> FastAPI:
                                       calibrated=True)
                 audit.record(rec.record_id, r["decision"], keys=r["keys"],
                              n_candidates=r["n_candidates"], path=r["path"],
-                             evidence=r["evidence"])
+                             evidence=r["evidence"], run_id=run_id)
                 summary[r["outcome"]] += 1
                 value[r["outcome"]] += abs(rec.amount_minor) / 100
                 if r["outcome"] != "posted" and rec.day is not None:
@@ -623,7 +623,7 @@ def create_app() -> FastAPI:
                                       narrator=narrator, calibrated=False)
                 audit.record(rec.record_id, r["decision"], keys=r["keys"],
                              n_candidates=r["n_candidates"], path=r["path"],
-                             evidence=r["evidence"])
+                             evidence=r["evidence"], run_id=run_id)
                 summary[r["outcome"]] += 1
                 if r["outcome"] != "posted" and rec.day is not None:
                     unresolved.append((rec.day, abs(rec.amount_minor) / 100))

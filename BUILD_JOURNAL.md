@@ -2233,3 +2233,50 @@ the suite says which README row became a lie.
 That is the smallest version of the rule this project kept relearning: **a
 claim that nothing checks is not a claim** — including a claim written in a
 README about the code enforcing claims.
+
+---
+
+## The audit log destroyed its own evidence under concurrency
+
+A review predicted a race in `AuditLog`: one instance is shared by the service,
+`self._run_id` is a single mutable slot, and two overlapping requests would
+misfile one batch's decisions under the other's run.
+
+Reproduced with four concurrent writers, and the outcome is worse than
+misfiling:
+
+```
+user0: IntegrityError: NOT NULL constraint failed: decisions.run_id   0/40 rows
+user1: IntegrityError                                                0/40 rows
+user2: IntegrityError                                                0/40 rows
+user3:                                                              40/40 rows
+```
+
+**Three of four writers lost every row they had written.** `finish_run` clears
+the shared slot, so a batch still running inserts a NULL and dies. Misfiling is
+the same mechanism — this interleaving simply crashed before it could happen.
+
+For a project whose central claim is a complete audit trail, that is the worst
+failure available: it destroys the *evidence* rather than the answer. And it
+would only appear with two people on the demo at once, which is exactly what a
+judging window looks like.
+
+`record()` and `record_correction()` now take an explicit `run_id`, and every
+concurrent caller passes it. The attribute stays for single-threaded scripts,
+where there is one run and naming it would be noise. Three tests at the log and
+one at the HTTP layer: four writers keep their own forty rows each, finishing
+one run leaves another in flight untouched, and three simultaneous `/api/run`
+calls end with three distinct run ids, complete trails, and `completed` status.
+
+### The other three were about scale, and are stated rather than solved
+
+An in-memory `defaultdict` index, whole-file CSV parsing, and an unauthenticated
+CPU-bound endpoint are all real at volume and none is load-bearing for the
+reconciliation logic — they are the API layer assuming one user at a time. For a
+judged demo it has one. Adding Redis, streaming parsers and a task queue days
+before submission would trade a working demo for an unproven one.
+
+So the caps are stated in the README as the demo's limits rather than the
+design's: 10 MB, 20,000 bank rows, 100,000 ledger rows, one worker, no rate
+limit. The race was different in kind — it corrupts correctness at two users,
+not at a million.

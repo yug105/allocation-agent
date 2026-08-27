@@ -210,16 +210,30 @@ class AuditLog:
         n_candidates: int,
         path: str,
         evidence: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> None:
-        """Append one decision. Never overwrites."""
-        if self._run_id is None:
+        """Append one decision. Never overwrites.
+
+        **Pass `run_id` from any concurrent caller.** One `AuditLog` is shared
+        by the whole service, and `self._run_id` is a single mutable slot: two
+        requests overlapping means the second `start_run` overwrites the first,
+        so one batch's decisions land under the other's run — and when the first
+        `finish_run` clears the slot, the batch still going inserts a NULL and
+        dies. Measured with four concurrent writers: three raised
+        `IntegrityError` and lost every row they had written.
+
+        The attribute remains for single-threaded scripts, where there is only
+        ever one run and passing it would be noise.
+        """
+        rid = run_id or self._run_id
+        if rid is None:
             raise RuntimeError("no run in progress: call start_run() with approved settings first")
         with self._lock:
             self._conn.execute(
             "INSERT INTO decisions (run_id, record_id, decided_at, path, outcome, chosen_keys, "
             "confidence, threshold_required, amount_minor, n_candidates, reason, policy_version, "
             "evidence, reviewer) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (self._run_id, record_id, _now(), path, decision.outcome.value,
+            (rid, record_id, _now(), path, decision.outcome.value,
              json.dumps(keys), decision.confidence, decision.threshold_required,
              decision.amount_minor, n_candidates, decision.reason,
                  decision.policy_version, json.dumps(evidence) if evidence else None, None),
@@ -232,13 +246,15 @@ class AuditLog:
         corrected_keys: list[str],
         reviewer: str,
         note: str = "",
+        run_id: str | None = None,
     ) -> None:
         """Append a human correction as a new row.
 
         The original decision stays visible. An audit trail that hides what the
         machine originally proposed cannot show that a human changed anything.
         """
-        if self._run_id is None:
+        rid = run_id or self._run_id
+        if rid is None:
             raise RuntimeError("no run in progress")
         with self._lock:
             prior = self._conn.execute(
@@ -254,7 +270,7 @@ class AuditLog:
             "INSERT INTO decisions (run_id, record_id, decided_at, path, outcome, chosen_keys, "
             "confidence, threshold_required, amount_minor, n_candidates, reason, policy_version, "
             "evidence, reviewer) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (self._run_id, record_id, _now(), "human", "post", json.dumps(corrected_keys),
+            (rid, record_id, _now(), "human", "post", json.dumps(corrected_keys),
                  None, 0.0, prior["amount_minor"], prior["n_candidates"],
                  note or "corrected by reviewer", prior["policy_version"], None, reviewer),
             )
