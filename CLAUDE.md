@@ -120,6 +120,11 @@ only fields `/api/meta` actually returns, and shows no internal enum name. The
 server owns every number the page displays (`FREE_TIER_RECORDS_PER_SECOND`,
 `MIN_FOR_RATES`, `BLOCKING`) and ships them through `/api/meta`.
 
+**`/api/connect` is real.** It pulls a merchant's settlements from Razorpay in
+test mode and runs the solver on them with the settlement id withheld. The
+transport is injectable (`_rzp_fetch`) so every test runs without a key or a
+network. A live key is refused; the secret is never stored, logged or returned.
+
 **Not on any live path:** `learn/` is an offline experiment run by
 `scripts/run_learning.py` — correcting a decision in the demo retrains nothing.
 `learn/casebase.py` is tested and called by nothing. `pipeline.py` is used only

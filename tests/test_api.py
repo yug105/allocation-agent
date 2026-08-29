@@ -685,9 +685,22 @@ def test_the_superseded_upload_stub_is_gone(client):
                        ).status_code == 404
 
 
-def test_the_unimplemented_connect_stub_is_gone(client):
-    assert client.post("/api/connect", json={"key_id": "rzp_test_x",
-                                             "key_secret": "y"}).status_code == 404
+def test_connect_does_real_work_rather_than_returning_a_stub(client, monkeypatch):
+    """It returned 501 for weeks, then 404 after being deleted. The third
+    version has to actually reconcile something."""
+    import allocation_agent.api as api_mod
+    monkeypatch.setattr(api_mod, "_rzp_fetch", lambda u, a: _rzp_reply(
+        _rzp_line("setl_A", "pay_1", 12_345), _rzp_line("setl_A", "pay_2", 67_890)))
+    r = client.post("/api/connect", json={"key_id": "rzp_test_x", "key_secret": "s",
+                                          "year": 2026, "month": 3})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["n_settlements"] == 1
+    assert body["results"][0]["components"], "no batch recovered"
+    assert "not implemented" not in json.dumps(body).lower()
+    assert "not wired" not in json.dumps(body).lower()
+
+
 
 
 # --------------------------------------------------------------------------- #
@@ -1705,3 +1718,135 @@ def test_the_page_has_no_broken_template_placeholders(client):
     for m in re.finditer(r"\$\{([^{}]*)\}", script):
         assert m.group(1).count("(") == m.group(1).count(")"), \
             f"unbalanced interpolation: {m.group(0)[:60]}"
+
+
+# --------------------------------------------------------------------------- #
+# Connect: a merchant's own settlements, in test mode.
+#
+# The recon endpoint returns settled lines carrying the settlement_id they were
+# paid out under. Group by that and it is this project's hard case with real
+# money — several payments landing as one bank credit — so the solver runs on
+# the merchant's own data with the batch id withheld exactly as it is on the
+# synthetic set.
+#
+# The transport is injectable, so none of this needs a key or a network.
+# --------------------------------------------------------------------------- #
+
+def _rzp_reply(*lines):
+    return {"entity": "collection", "count": len(lines), "items": list(lines)}
+
+
+def _rzp_line(settlement, entity, credit, debit=0):
+    return {"entity_id": entity, "settlement_id": settlement, "type": "payment",
+            "credit": credit, "debit": debit, "fee": 0, "currency": "INR",
+            "settled_at": 1_700_000_000}
+
+
+def test_a_live_key_is_refused_by_the_endpoint(client):
+    r = client.post("/api/connect", json={
+        "key_id": "rzp_live_abc", "key_secret": "s", "year": 2026, "month": 3})
+    assert r.status_code == 400
+    assert "test-mode" in r.json()["detail"]
+
+
+def test_the_secret_is_never_echoed_back(client, monkeypatch):
+    import allocation_agent.api as api_mod
+    monkeypatch.setattr(api_mod, "_rzp_fetch", lambda u, a: _rzp_reply(
+        _rzp_line("setl_A", "pay_1", 10_000), _rzp_line("setl_A", "pay_2", 25_000)))
+    body = client.post("/api/connect", json={
+        "key_id": "rzp_test_abc", "key_secret": "topsecret",
+        "year": 2026, "month": 3}).json()
+    assert "topsecret" not in json.dumps(body)
+    assert "rzp_test_abc" not in json.dumps(body)
+
+
+def test_it_recovers_a_real_settlement_batch(client, monkeypatch):
+    """Two payments settled as one credit. The solver is given the credit and
+    the pool, never the settlement id."""
+    import allocation_agent.api as api_mod
+    monkeypatch.setattr(api_mod, "_rzp_fetch", lambda u, a: _rzp_reply(
+        _rzp_line("setl_A", "pay_1", 12_345),
+        _rzp_line("setl_A", "pay_2", 67_890),
+        _rzp_line("setl_B", "pay_3", 5_000),
+        _rzp_line("setl_B", "pay_4", 9_100)))
+    body = client.post("/api/connect", json={
+        "key_id": "rzp_test_abc", "key_secret": "s", "year": 2026, "month": 3}).json()
+
+    assert body["n_settlements"] == 2
+    assert body["n_lines"] == 4
+    recovered = [r for r in body["results"] if r["exact"]]
+    assert recovered, "recovered none of the merchant's own batches"
+    for r in recovered:
+        assert sum(c["amount"] for c in r["components"]) == pytest.approx(r["amount"])
+
+
+def test_the_settlement_id_is_not_handed_to_the_solver(client, monkeypatch):
+    """It is the answer. Passing it would make recovery a lookup.
+
+    Asserted on what the solver is actually called with, rather than on the
+    text of the source — a grep would pass on a comment.
+    """
+    import allocation_agent.api as api_mod
+
+    seen: list[dict] = []
+    real = api_mod.solve_subset
+
+    def spy(**kwargs):
+        seen.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(api_mod, "solve_subset", spy)
+    monkeypatch.setattr(api_mod, "_rzp_fetch", lambda u, a: _rzp_reply(
+        _rzp_line("setl_SECRET", "pay_1", 12_345),
+        _rzp_line("setl_SECRET", "pay_2", 67_890)))
+    client.post("/api/connect", json={"key_id": "rzp_test_abc", "key_secret": "s",
+                                      "year": 2026, "month": 3})
+    assert seen, "the solver was never called"
+    for call in seen:
+        assert "setl_SECRET" not in json.dumps(call, default=str), \
+            "the settlement id reached the solver"
+        assert set(call) <= {"target_minor", "candidates_minor", "config"}
+
+
+
+def test_an_account_with_no_settlements_says_so_rather_than_erroring(client, monkeypatch):
+    import allocation_agent.api as api_mod
+    monkeypatch.setattr(api_mod, "_rzp_fetch", lambda u, a: _rzp_reply())
+    r = client.post("/api/connect", json={
+        "key_id": "rzp_test_abc", "key_secret": "s", "year": 2026, "month": 3})
+    assert r.status_code == 200
+    assert r.json()["n_settlements"] == 0
+    assert "no settle" in r.json()["note"].lower()
+
+
+def test_an_upstream_failure_is_reported_not_swallowed(client, monkeypatch):
+    import allocation_agent.api as api_mod
+    from allocation_agent.adapters.razorpay import RazorpayError
+
+    def boom(url, auth):
+        raise RazorpayError("Razorpay rejected those credentials.")
+
+    monkeypatch.setattr(api_mod, "_rzp_fetch", boom)
+    r = client.post("/api/connect", json={
+        "key_id": "rzp_test_abc", "key_secret": "s", "year": 2026, "month": 3})
+    assert r.status_code == 400
+    assert "credentials" in r.json()["detail"]
+
+
+def test_the_page_offers_the_razorpay_connection(client):
+    page = client.get("/").text
+    assert "/api/connect" in page
+    assert "id=rzp-go" in page
+
+
+def test_the_page_warns_that_only_test_keys_are_accepted(client):
+    """A visitor about to paste credentials should read the constraint before
+    they type, not after the request is refused."""
+    page = client.get("/").text
+    assert "Test-mode keys only" in page
+    assert "never" in page and "stored" in page
+
+
+def test_the_secret_field_is_masked(client):
+    page = client.get("/").text
+    assert 'id=rzp-secret type=password' in page

@@ -2325,3 +2325,48 @@ report it on the command line, which is the rule this repo keeps having to
 relearn. The feature importances are new to the page and answer a question a
 judge will ask out loud — *what did it actually learn?* — with `n_candidates`
 and the amount deltas on top, which is what a reconciler should lean on.
+
+---
+
+## The gap I had flagged five times and not closed
+
+A Track 03 submission shipped a working Razorpay test-mode payment link. Ours
+had `/api/connect` returning 501, then deleted entirely as dead code. For a
+Razorpay buildathon that was the most obvious thing missing, and I had said so
+repeatedly without doing anything about it.
+
+Reading the API rather than guessing turned it from a logo into the most
+interesting integration available. `GET /v1/settlements/recon/combined` returns
+every settled line with the **`settlement_id` it was paid out under**, in
+integer paise. Group by that and a merchant's own account contains precisely
+this project's hard case: several captured payments arriving as one bank credit.
+
+So the solver runs on real money, under the same contract as the synthetic set —
+**the settlement id is withheld**. It gets the credit and the period's payment
+pool and has to recover the subset. Recovering a real batch is therefore a
+measurement rather than a lookup, and a test asserts the id never reaches
+`solve_subset` by inspecting the arguments it was called with, not by grepping
+the source: a grep passes on a comment.
+
+```
+6 settled lines -> 3 settlements, 3 recovered
+
+setl_9x   INR 7,057.50   [Recovered your batch]
+    pay_a      1,250.00
+    pay_b      4,875.50
+    pay_c        932.00
+```
+
+**The safety properties are the demo.** A live key is refused with a reason —
+it would authorise reads against real settled money, and refusing is itself the
+argument. The secret goes in an `Authorization` header rather than a query
+string, because URLs end up in proxy logs and browser history; there is a test
+that the credentials never appear in the URL, and another that they never appear
+in the response. Twenty adapter tests and eight API tests, all with an injected
+transport, so none of this needs a key or a network to verify.
+
+One design detail worth recording: a settlement's amount is the **net** of its
+lines, `credit - debit`, so a refund reduces its payout rather than adding to
+it, and a settlement netting to zero is not offered as a credit to reconcile at
+all. Getting that backwards would have made every refunded batch unsolvable
+while looking like a solver failure.

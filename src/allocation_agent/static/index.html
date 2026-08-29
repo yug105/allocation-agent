@@ -197,6 +197,7 @@ color:var(--muted);font-size:.87rem;margin:.9rem 0}
   <button id=n2 aria-selected=false>Exceptions</button>
   <button id=n3 aria-selected=false>Grouped payments</button>
   <button id=n4 aria-selected=false>Your own files</button>
+  <button id=n7 aria-selected=false>Connect Razorpay</button>
   <div class=grp>System</div>
   <button id=n5 aria-selected=false>Trust &amp; evidence</button>
   <button id=n6 aria-selected=false>Audit trail</button>
@@ -314,6 +315,37 @@ color:var(--muted);font-size:.87rem;margin:.9rem 0}
   <div id=uout></div>
 </section>
 
+<!-- ══ 7 · CONNECT ═════════════════════════════════════════════════ -->
+<section id=v7 class=hide>
+  <div class=top><div>
+    <h2>Connect Razorpay</h2>
+    <p class=sub>Your own settlements, in test mode. Razorpay pays several
+    captured payments out as one credit; this recovers which ones — and the
+    settlement id is never handed to the solver, so it has to work them out the
+    same way it does on the benchmark.</p>
+  </div></div>
+  <div class=box style="margin-bottom:1rem">
+    <div class=cards style="grid-template-columns:1fr 1fr;margin-top:0">
+      <div><label style="display:block;margin-bottom:.3rem">Key ID</label>
+        <input id=rzp-id placeholder="rzp_test_..." style="width:100%"></div>
+      <div><label style="display:block;margin-bottom:.3rem">Key secret</label>
+        <input id=rzp-secret type=password style="width:100%"></div>
+    </div>
+    <div style="display:flex;gap:.7rem;align-items:flex-end;flex-wrap:wrap;margin-top:.8rem">
+      <div><label style="display:block;margin-bottom:.3rem">Year</label>
+        <input id=rzp-year type=number value=2026 min=2000 max=2100 style=width:6rem></div>
+      <div><label style="display:block;margin-bottom:.3rem">Month</label>
+        <input id=rzp-month type=number value=3 min=1 max=12 style=width:5rem></div>
+      <button class=go id=rzp-go>Reconcile my settlements</button>
+    </div>
+    <p class=faint style="margin:.9rem 0 0"><b>Test-mode keys only.</b> A live key
+    is refused — it would read against real settled money and nothing here needs
+    that. The secret is used for a single request to Razorpay and is never
+    stored, logged, or sent back to this page.</p>
+  </div>
+  <div id=rzp-out></div>
+</section>
+
 <!-- ══ 5 · TRUST ════════════════════════════════════════════════════ -->
 <section id=v5 class=hide>
   <div class=top><div>
@@ -382,14 +414,14 @@ const SAYS={
 };
 
 function nav(i){
-  for(let k=0;k<7;k++){
+  for(let k=0;k<8;k++){
     const b=$('#n'+k), s=$('#v'+k);
     if(b) b.setAttribute('aria-selected', k===i);
     if(s) s.classList.toggle('hide', k!==i);
   }
   window.scrollTo(0,0);
 }
-for(let k=0;k<7;k++){ const b=$('#n'+k); if(b) b.onclick=()=>nav(k); }
+for(let k=0;k<8;k++){ const b=$('#n'+k); if(b) b.onclick=()=>nav(k); }
 
 async function call(url, opts, btn){
   btn.disabled=true; const was=btn.textContent; btn.textContent='Running…';
@@ -768,6 +800,43 @@ function renderUpload(d){
     <td class=n>${r.confidence!=null?pct(r.confidence):'—'}</td>
     <td>${esc(r.explanation)}</td></tr>`).join('')}
   </table></div>`;
+}
+
+// ── connect ────────────────────────────────────────────────────────────
+$('#rzp-go').onclick=async()=>{
+  $('#rzp-out').innerHTML='';
+  const body={key_id:$('#rzp-id').value.trim(), key_secret:$('#rzp-secret').value,
+              year:+$('#rzp-year').value, month:+$('#rzp-month').value};
+  if(!body.key_id||!body.key_secret){
+    $('#rzp-out').innerHTML='<p class=y>Both the key id and secret are needed.</p>'; return; }
+  try{ renderConnect(await call('/api/connect', json(body), $('#rzp-go'))); }
+  catch(e){ $('#rzp-out').innerHTML=`<p class=r>${esc(e.message)}</p>`; }
+};
+
+function renderConnect(d){
+  if(!d.n_settlements){ $('#rzp-out').innerHTML=`<p class=note>${esc(d.note)}</p>`; return; }
+  const TONE={good:'g',warn:'y',bad:'r'};
+  $('#rzp-out').innerHTML=`
+  <div class=cards>
+    <div class=card><div class=v>${fmt(d.n_settlements)}</div><div class=l>settlements in ${esc(d.period)}</div></div>
+    <div class=card><div class=v>${fmt(d.n_lines)}</div><div class=l>settled payments</div></div>
+    <div class=card><div class="v g">${fmt(d.exact)}</div><div class=l>batches recovered</div></div>
+  </div>
+  <p class=note>${esc(d.note)}</p>
+  ${d.results.map(r=>`
+  <div class=solve>
+    <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:center">
+      <span class=faint style="font-family:var(--mono)">${esc(r.settlement_id)} · ${esc(r.currency)}</span>
+      <span class="chip ${TONE[r.tone]||''}">${esc(r.verdict)}</span>
+    </div>
+    ${r.components.length?`<div class=eq><span class=lhs>${money(r.amount)}</span> =
+      ${r.components.map(c=>money(c.amount)).join(' + ')}</div>
+    <ul class=legs>${r.components.map(c=>`<li><span class=id>${esc(c.payment_id)}</span>
+      <span>${money(c.amount)}</span></li>`).join('')}</ul>`
+    :`<div class=eq>${money(r.amount)}</div>`}
+    <p class=faint style="margin:.7rem 0 0">Found from ${fmt(r.pool_size)} settled
+    payments in the period, without being told which belonged to this payout.</p>
+  </div>`).join('')}`;
 }
 
 // ── audit trail ────────────────────────────────────────────────────────

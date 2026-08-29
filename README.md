@@ -291,6 +291,23 @@ thread-safe with a lock and a four-thread test.
 
 ---
 
+## Connect your own Razorpay data
+
+Test-mode keys only. `GET /v1/settlements/recon/combined` returns every settled
+line with the `settlement_id` it was paid out under — so grouped, a merchant's
+own account contains exactly this project's hard case: several captured
+payments arriving as one bank credit.
+
+**The settlement id is withheld from the solver.** It gets the credit and the
+period's payment pool and has to recover the subset, which is the same contract
+the synthetic set runs under — so recovering a real batch is a measurement, not
+a lookup. There is a test asserting the id never reaches `solve_subset`, checked
+on the arguments rather than by grepping the source.
+
+A live key is refused with a reason: it would authorise reads against real
+settled money and nothing here needs that. The secret is used for one request
+to `api.razorpay.com` and is never stored, logged, or returned — also tested.
+
 ## Live demo
 
 Deployed on Render's free tier. The first request after a period of inactivity

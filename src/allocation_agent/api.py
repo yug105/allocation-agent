@@ -33,6 +33,12 @@ from allocation_agent.adapters.csv_upload import (
     parse_bank_csv,
     parse_ledger_csv,
 )
+from allocation_agent.adapters.razorpay import (
+    RazorpayError,
+    fetch_recon,
+    group_into_settlements,
+)
+from allocation_agent.adapters.razorpay import _default_fetch as _rzp_fetch
 from allocation_agent.decide.gate import GateConfig, decide
 from allocation_agent.decide.narrate import Narrator
 from allocation_agent.match.blocker import BlockingConfig
@@ -107,6 +113,16 @@ class RunRequest(BaseModel):
     limit: int = Field(default=200, gt=0, le=10**9)
     review_all: bool = False
     mult_threshold: float = Field(default=MULT_THRESHOLD, ge=0.0, le=1.0)
+
+
+class ConnectRequest(BaseModel):
+    """A merchant's own test-mode credentials, used once and never stored."""
+
+    key_id: str
+    key_secret: str
+    year: int = Field(ge=2000, le=2100)
+    month: int = Field(ge=1, le=12)
+    day: int | None = Field(default=None, ge=1, le=31)
 
 
 class SettlementRequest(BaseModel):
@@ -385,6 +401,78 @@ def create_app() -> FastAPI:
             "aging": _aging(unresolved, _span([r.day for r in records])),
             "exceptions": exceptions[:100],
             "n_exceptions": len(exceptions),
+        }
+
+    @app.post("/api/connect")
+    def connect(req: ConnectRequest) -> dict:
+        """Recover a merchant's own settlement batches from their Razorpay data.
+
+        `GET /v1/settlements/recon/combined` returns every settled line with the
+        `settlement_id` it was paid out under. Grouped, that is this project's
+        hard case with real money: several payments arriving as one bank credit.
+
+        **The settlement id is withheld from the solver.** It gets the credit
+        and a pool of that period's payments and has to recover the subset, so
+        the result is a measurement rather than a lookup — the same contract
+        the synthetic set runs under.
+
+        Test-mode keys only. The secret is used for one request to Razorpay and
+        is never stored, logged or returned.
+        """
+        try:
+            lines = fetch_recon(req.key_id, req.key_secret, year=req.year,
+                                month=req.month, day=req.day, fetch=_rzp_fetch)
+        except RazorpayError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+        settlements = group_into_settlements(lines)
+        if not settlements:
+            return {"n_settlements": 0, "n_lines": len(lines), "results": [],
+                    "note": ("Connected, but this account has no settlements in "
+                             f"{req.year}-{req.month:02d}. Test-mode settlements "
+                             "appear once test payments have been captured and "
+                             "settled — try a period with activity.")}
+
+        # The candidate pool is every settled line in the period, which is what
+        # a reconciler would actually be holding: the batch is not marked.
+        pool = [(item.entity_id, item.net_minor) for item in lines
+                if item.net_minor > 0]
+        amounts = [amount for _, amount in pool]
+        ids = [entity for entity, _ in pool]
+        cfg = SolverConfig(max_candidates=128)
+
+        out, exact = [], 0
+        for st in settlements[:50]:
+            r = solve_subset(target_minor=st["amount_minor"],
+                             candidates_minor=amounts, config=cfg)
+            chosen = [ids[i] for i in r.indices]
+            is_exact = sorted(chosen) == sorted(st["truth"])
+            exact += is_exact
+            if is_exact:
+                verdict, tone = "Recovered your batch", "good"
+            elif r.status is SolverStatus.SOLVED:
+                verdict, tone = "Balances but is not the batch", "bad"
+            elif r.status is SolverStatus.AMBIGUOUS:
+                verdict, tone = "Two groups fit — refused to guess", "warn"
+            else:
+                verdict, tone = "Could not resolve", "warn"
+            out.append({
+                "settlement_id": st["settlement_id"], "verdict": verdict, "tone": tone,
+                "amount": round(st["amount_minor"] / 100, 2),
+                "currency": st["currency"], "exact": is_exact,
+                "true_size": st["n_lines"], "pool_size": len(pool),
+                "components": [{"payment_id": p,
+                                "amount": round(dict(pool)[p] / 100, 2)}
+                               for p in chosen],
+            })
+
+        return {
+            "n_settlements": len(settlements), "n_lines": len(lines),
+            "n_solved": len(out), "exact": exact,
+            "period": f"{req.year}-{req.month:02d}" + (f"-{req.day:02d}" if req.day else ""),
+            "note": ("Your own settlements, recovered from the payment pool "
+                     "without the batch id. Amounts are in rupees."),
+            "results": out,
         }
 
     @app.get("/api/stream")
