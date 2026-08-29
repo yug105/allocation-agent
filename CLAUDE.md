@@ -25,6 +25,7 @@ Regenerating things (each reads `data/`, writes `artifacts/`):
 uv run python scripts/export_artifacts.py    # -> demo.json, models.pkl, meta.json
 uv run python scripts/export_reconriver.py   # -> reconriver.json
 uv run python scripts/export_overview.py     # -> overview.json (the hero figures)
+uv run python scripts/export_training_evidence.py  # -> training.json (the Trust screen)
 uv run python scripts/train_ranker.py        # retrains; the leakage gate runs here
 uv run python scripts/eval_solver.py         # regenerates the README solver table
 uv run python scripts/run_learning.py        # the learning experiment + its controls

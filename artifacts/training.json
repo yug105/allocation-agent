@@ -1,0 +1,76 @@
+{
+  "n_records": 190717,
+  "n_keys": 103191,
+  "split": {
+    "train": 134260,
+    "val": 19059,
+    "test": 37398
+  },
+  "features": [
+    "amount_exact",
+    "amount_delta_abs",
+    "amount_delta_rel",
+    "total_delta_abs",
+    "total_delta_rel",
+    "date_gap_abs",
+    "date_gap_signed",
+    "date_missing",
+    "key_n_rows",
+    "key_is_single_row",
+    "key_total_major",
+    "n_candidates"
+  ],
+  "calibrator": "isotonic",
+  "ranker_top1": {
+    "train": 0.9796,
+    "val": 0.9566,
+    "test": 0.9598
+  },
+  "ranker_gap": 0.0198,
+  "detector": {
+    "train": {
+      "pr_auc": 0.8997,
+      "positive_rate": 0.1171,
+      "at_0.7": {
+        "precision": 0.7427,
+        "recall": 0.8604,
+        "f1": 0.7972,
+        "false_alarms": 4685,
+        "missed": 2194
+      }
+    },
+    "test": {
+      "pr_auc": 0.8716,
+      "positive_rate": 0.1017,
+      "at_0.7": {
+        "precision": 0.6838,
+        "recall": 0.8725,
+        "f1": 0.7667,
+        "false_alarms": 1535,
+        "missed": 485
+      }
+    }
+  },
+  "detector_gap": 0.0281,
+  "calibration": {
+    "ece_before": 0.092,
+    "ece_after": 0.0116,
+    "n_val": 19054,
+    "n_test": 37392
+  },
+  "importances": {
+    "n_candidates": 0.2386,
+    "key_total_major": 0.2209,
+    "amount_delta_abs": 0.1016,
+    "total_delta_abs": 0.0949,
+    "amount_delta_rel": 0.0911,
+    "total_delta_rel": 0.0897,
+    "date_gap_abs": 0.0718,
+    "date_gap_signed": 0.0715,
+    "key_n_rows": 0.0143,
+    "amount_exact": 0.0039,
+    "key_is_single_row": 0.0017,
+    "date_missing": 0.0
+  },
+  "seconds": 167.0
+}

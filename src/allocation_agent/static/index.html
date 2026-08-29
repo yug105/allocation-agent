@@ -107,6 +107,18 @@ min-width:8rem;text-align:right}
 .row .why{font-size:.87rem;color:var(--muted);margin-top:.15rem;
 overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row .go{color:var(--line-2);font-size:1.2rem}
+
+/* the live feed: newest at the top, each row appearing as it is decided */
+.feed{max-height:23rem;overflow-y:auto;border:1px solid var(--line);border-radius:12px;
+background:var(--card);margin-top:.6rem}
+.tick{display:flex;gap:.8rem;align-items:center;padding:.5rem .9rem;
+border-bottom:1px solid var(--line);font-size:.85rem;animation:in .18s ease-out}
+.tick:last-child{border-bottom:0}
+.tick .i{color:var(--faint);font-family:var(--mono);font-size:.75rem;min-width:2.5rem}
+.tick .rid{font-family:var(--mono);font-size:.8rem;min-width:6rem}
+.tick .a{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:600}
+@keyframes in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.tick{animation:none}}
 .chip{font-size:.74rem;font-weight:650;padding:.25rem .6rem;border-radius:99px;
 white-space:nowrap;border:1px solid transparent}
 .chip.g{background:var(--ok-soft);color:var(--ok)}
@@ -239,7 +251,19 @@ color:var(--muted);font-size:.87rem;margin:.9rem 0}
   </div></div>
   <div style="display:flex;gap:.7rem;align-items:center;flex-wrap:wrap">
     <label>payments <input id=n type=number value=200 min=1 max=4000 style=width:6rem></label>
-    <button class=go id=go>Run reconciliation</button>
+    <button class=go id=go>Watch it run</button>
+    <button class="go ghost" id=gobatch>Run as a batch</button>
+  </div>
+  <div id=live class=hide>
+    <div class=cards>
+      <div class=card><div class="v" id=lv-n>0</div><div class=l>payments seen</div></div>
+      <div class=card><div class="v g" id=lv-p>0</div><div class=l>posted automatically</div></div>
+      <div class=card><div class="v y" id=lv-q>0</div><div class=l>sent to a person</div></div>
+      <div class=card><div class="v p" id=lv-gr>0</div><div class=l>grouped payments</div></div>
+      <div class=card><div class="v" id=lv-r>0</div><div class=l>payments/sec</div></div>
+    </div>
+    <div class=split id=lv-bar></div>
+    <div id=lv-feed class=feed></div>
   </div>
   <p class=hint id=estimate style="margin:.6rem 0 0"></p>
   <div id=out></div>
@@ -318,6 +342,9 @@ color:var(--muted);font-size:.87rem;margin:.9rem 0}
       <span>Append-only, enforced by the database. A run that stops halfway is
       marked failed rather than left looking finished.</span></div></div>
   </div>
+  <h3>How the models were trained</h3>
+  <div id=training><p class=faint>loading…</p></div>
+
   <h3>What these numbers do not say</h3>
   <p class=note id=caveats>loading…</p>
 </section>
@@ -438,6 +465,52 @@ fetch('/api/overview').then(r=>r.json()).then(o=>{
   invented.`;
 }).catch(()=>{ $('#hero').innerHTML='<p class=r style="margin:0">Overview unavailable — open Reconcile and press Run.</p>'; });
 
+fetch('/api/training').then(r=>r.json()).then(t=>{
+  const d=t.detector.test["at_0.7"], gap=x=>(x*100).toFixed(2);
+  $('#training').innerHTML=`
+  <p class=faint>${fmt(t.n_records)} records and ${fmt(t.n_keys)} ledger keys, split by
+  time: ${fmt(t.split.train)} to train, ${fmt(t.split.val)} to validate,
+  ${fmt(t.split.test)} held back. A settlement's records never straddle the split.</p>
+  <div class=scroll><table>
+  <tr><th></th><th class=n>train</th><th class=n>validate</th><th class=n>held out</th><th class=n>gap</th></tr>
+  <tr><td>Picks the right entry</td><td class=n>${pct(t.ranker_top1.train)}</td>
+    <td class=n>${pct(t.ranker_top1.val)}</td><td class=n>${pct(t.ranker_top1.test)}</td>
+    <td class="n ${t.ranker_gap>0.05?'y':'g'}">+${gap(t.ranker_gap)}</td></tr>
+  <tr><td>Spots a grouped payment</td><td class=n>${t.detector.train.pr_auc.toFixed(3)}</td>
+    <td class=n>—</td><td class=n>${t.detector.test.pr_auc.toFixed(3)}</td>
+    <td class="n ${t.detector_gap>0.05?'y':'g'}">+${t.detector_gap.toFixed(3)}</td></tr>
+  </table></div>
+  <p class=faint>A large positive gap is memorising. Both are small, and the
+  validation column sits near the held-out one — the split doing its job rather
+  than a bug.</p>
+
+  <h3 style="margin-top:1.4rem">At the threshold it actually runs</h3>
+  <div class=cards style="grid-template-columns:repeat(auto-fit,minmax(8rem,1fr))">
+    <div class=card><div class=v>${pct(d.precision)}</div><div class=l>of grouped alerts were right</div></div>
+    <div class=card><div class=v>${pct(d.recall)}</div><div class=l>of grouped payments caught</div></div>
+    <div class=card><div class=v>${d.f1.toFixed(3)}</div><div class=l>F1</div></div>
+    <div class=card><div class="v y">${fmt(d.false_alarms)}</div><div class=l>false alarms</div></div>
+  </div>
+  <p class=faint>Roughly one alert in three is a false alarm. That is the cost of
+  catching ${pct(d.recall)} of the case nobody else automates, and it is a review
+  queue rather than a wrong posting.</p>
+
+  <h3 style="margin-top:1.4rem">Making the confidence mean something</h3>
+  <p class=faint>A ranking score is not a probability. Calibrated against how
+  often the answer is actually right, the error between claimed and observed
+  confidence fell from <b>${t.calibration.ece_before.toFixed(4)}</b> to
+  <b class=g>${t.calibration.ece_after.toFixed(4)}</b> on the held-out split
+  across ${fmt(t.calibration.n_test)} held-out payments, using ${esc(t.calibrator)} regression.</p>
+
+  <h3 style="margin-top:1.4rem">What the model leans on</h3>
+  <div class=scroll><table><tr><th>feature</th><th class=n>share of the model</th><th></th></tr>
+  ${Object.entries(t.importances).slice(0,6).map(([k,v])=>`<tr>
+    <td class=id>${esc(k)}</td><td class=n>${pct(v)}</td>
+    <td style="width:45%"><div class=split style="margin:.3rem 0">
+      <i style="width:${v/Object.values(t.importances)[0]*100}%;background:var(--accent)"></i></div></td>
+  </tr>`).join('')}</table></div>`;
+}).catch(()=>{ $('#training').innerHTML='<p class=faint>Training evidence not exported.</p>'; });
+
 fetch('/api/meta').then(r=>r.json()).then(m=>{
   META=m; $('#n').max=m.n_demo_records; showEstimate();
 }).catch(()=>{});
@@ -457,13 +530,64 @@ function pipeline(s, total){
 }
 
 // ── reconcile ──────────────────────────────────────────────────────────
-$('#go').onclick=async()=>{
-  $('#out').innerHTML='';
+$('#gobatch').onclick=async()=>{
+  $('#out').innerHTML=''; $('#live').classList.add('hide');
   try{
-    const d=await call('/api/run', json({limit:clamp($('#n'))}), $('#go'));
+    const d=await call('/api/run', json({limit:clamp($('#n'))}), $('#gobatch'));
     OBSERVED_RATE=d.records_per_second; showEstimate();
     LAST=d; renderRun(d); renderQueue(); renderAudit(d);
   }catch(e){ $('#out').innerHTML=`<p class=r>${esc(e.message)}</p>`; }
+};
+
+// Watch mode. The same endpoint's work, one decision at a time, so the counters
+// move while it happens instead of after. A test asserts the streamed verdicts
+// match the batch — a demo path that diverged would make the numbers evidence
+// for nothing.
+$('#go').onclick=()=>{
+  const btn=$('#go'), n=clamp($('#n'));
+  btn.disabled=true; btn.textContent='Running…';
+  $('#out').innerHTML=''; $('#live').classList.remove('hide');
+  const feed=$('#lv-feed'); feed.innerHTML='';
+  const c={posted:0,queued:0,suspected_grouped:0,no_candidate:0,unscorable:0,model_error:0};
+  const t0=performance.now();
+  const es=new EventSource(`/api/stream?limit=${n}`);
+
+  es.onmessage=(ev)=>{
+    const d=JSON.parse(ev.data);
+    if(d.type==='record'){
+      c[d.outcome]=(c[d.outcome]||0)+1;
+      $('#lv-n').textContent=fmt(d.i);
+      $('#lv-p').textContent=fmt(c.posted);
+      $('#lv-q').textContent=fmt(c.queued+c.no_candidate+c.unscorable+c.model_error);
+      $('#lv-gr').textContent=fmt(c.suspected_grouped);
+      $('#lv-r').textContent=fmt(Math.round(d.i/((performance.now()-t0)/1000)));
+      const tot=d.i||1;
+      $('#lv-bar').innerHTML=
+        `<i style="width:${c.posted/tot*100}%;background:var(--ok)"></i>`+
+        `<i style="width:${c.suspected_grouped/tot*100}%;background:var(--grp)"></i>`+
+        `<i style="width:${(tot-c.posted-c.suspected_grouped)/tot*100}%;background:var(--warn)"></i>`;
+      const w=SAYS[d.outcome]||{t:d.outcome,c:''};
+      const row=document.createElement('div');
+      row.className='tick';
+      row.innerHTML=`<span class=i>${d.i}</span><span class="chip ${w.c}">${w.t}</span>
+        <span class=rid>${esc(d.record_id)}</span>
+        <span class=a>${money(d.amount)}</span>`;
+      feed.prepend(row);
+      while(feed.childElementCount>60) feed.lastElementChild.remove();
+    }
+    if(d.type==='done'||d.type==='error'){
+      es.close(); btn.disabled=false; btn.textContent='Watch it run';
+      if(d.type==='error'){ $('#out').innerHTML=`<p class=r>${esc(d.detail)}</p>`; return; }
+      OBSERVED_RATE=d.records_per_second; showEstimate();
+      // Re-fetch as a batch payload so the queue and audit views get the
+      // exception detail the stream does not carry.
+      call('/api/run', json({limit:n}), btn).then(b=>{
+        LAST=b; renderRun(b); renderQueue(); renderAudit(b);
+      }).catch(()=>{});
+    }
+  };
+  es.onerror=()=>{ es.close(); btn.disabled=false; btn.textContent='Watch it run';
+    $('#out').innerHTML='<p class=r>The stream dropped. Try “Run as a batch”.</p>'; };
 };
 
 function renderRun(d){

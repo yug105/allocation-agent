@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from allocation_agent.adapters.csv_upload import (
@@ -136,6 +136,7 @@ class _State:
         self.bundle_meta: dict[str, Any] = {}
         self.models: Models | None = None
         self.overview: dict[str, Any] = {}
+        self.training: dict[str, Any] = {}
         self.settlements: list[dict] = []
         self.payments: dict[str, dict] = {}
 
@@ -201,6 +202,10 @@ class _State:
         ov = ARTIFACTS / "overview.json"
         if ov.exists():
             self.overview = json.loads(ov.read_text())
+
+        tr = ARTIFACTS / "training.json"
+        if tr.exists():
+            self.training = json.loads(tr.read_text())
 
         rr = ARTIFACTS / "reconriver.json"
         if rr.exists():
@@ -268,6 +273,19 @@ def create_app() -> FastAPI:
         if not state.overview:
             raise HTTPException(503, "overview not exported; run scripts/export_overview.py")
         return state.overview
+
+    @app.get("/api/training")
+    def training() -> dict:
+        """How the models were trained, and what that produced.
+
+        Precomputed by scripts/export_training_evidence.py, which needs the
+        60 MB training CSV the deployed image does not carry. Until this
+        existed the evidence for every headline number lived in a terminal.
+        """
+        if not state.training:
+            raise HTTPException(503, "training evidence not exported; "
+                                     "run scripts/export_training_evidence.py")
+        return state.training
 
     @app.post("/api/run")
     def run(req: RunRequest) -> dict:
@@ -368,6 +386,84 @@ def create_app() -> FastAPI:
             "exceptions": exceptions[:100],
             "n_exceptions": len(exceptions),
         }
+
+    @app.get("/api/stream")
+    def stream(limit: int = 200, mult_threshold: float = MULT_THRESHOLD):
+        """The same reconciliation, one decision at a time.
+
+        A batch that computes for six seconds and then prints a table asks a
+        viewer to take the pipeline on trust. This emits each payment's verdict
+        as it is made, so the counters move and the queue fills while the work
+        happens — and there is a test asserting it reaches the same verdicts as
+        the batch endpoint, because a demo path that diverged from the measured
+        one would make the measurement evidence for nothing.
+        """
+        if not state.ready:
+            raise HTTPException(503, f"models not loaded: {state.error or 'unknown'}")
+
+        records = state.records[: max(1, min(limit, len(state.records)))]
+        gate = GateConfig(policy_version="v0.1")
+        run_id = audit.start_run(RunConfig(
+            approved_by="demo", blocking={"date_slack_days": BLOCKING.date_slack_days},
+            gate={"base": gate.base, "slope": gate.slope},
+            policy_version="v0.1", notes="streamed"))
+
+        def events():
+            summary = {"posted": 0, "queued": 0, "no_candidate": 0,
+                       "suspected_grouped": 0, "unscorable": 0, "model_error": 0}
+            value = dict.fromkeys(summary, 0.0)
+            correct = 0
+            started = time.perf_counter()
+            try:
+                for i, rec in enumerate(records, 1):
+                    r = _match_or_degrade(rec, index=state.index,
+                                          key_stats=state.key_stats,
+                                          models=state.models, gate=gate,
+                                          mult_threshold=mult_threshold,
+                                          blocking=BLOCKING, narrator=narrator,
+                                          calibrated=True)
+                    audit.record(rec.record_id, r["decision"], keys=r["keys"],
+                                 n_candidates=r["n_candidates"], path=r["path"],
+                                 evidence=r["evidence"], run_id=run_id)
+                    summary[r["outcome"]] += 1
+                    amount = abs(rec.amount_minor) / 100
+                    value[r["outcome"]] += amount
+                    truth, is_mult = state.truth.get(rec.record_id, ("", False))
+                    if r["outcome"] == "posted":
+                        correct += (not is_mult) and r["keys"][0] == truth
+                    yield "data: " + json.dumps({
+                        "type": "record", "i": i,
+                        "record_id": rec.record_id,
+                        "amount": round(amount, 2),
+                        "outcome": r["outcome"],
+                        "stage": r["stage"],
+                        "matched_key": r["keys"][0] if r["keys"] else None,
+                        "confidence": r["confidence"],
+                        "explanation": r["explanation"],
+                    }) + "\n\n"
+
+                audit.commit()
+                audit.finish_run(run_id)
+                elapsed = time.perf_counter() - started
+                yield "data: " + json.dumps({
+                    "type": "done", "run_id": run_id, "n_records": len(records),
+                    "summary": summary,
+                    "value_by_outcome": {k: round(v, 2) for k, v in value.items()},
+                    "precision_of_posted": correct / summary["posted"] if summary["posted"] else 0.0,
+                    "straight_through_rate": summary["posted"] / len(records),
+                    "records_per_second": len(records) / elapsed if elapsed else 0.0,
+                    "seconds": round(elapsed, 3),
+                }) + "\n\n"
+            except Exception as exc:  # noqa: BLE001
+                audit.commit()
+                audit.fail_run(run_id, f"{type(exc).__name__}: {exc}")
+                yield "data: " + json.dumps({
+                    "type": "error", "run_id": run_id,
+                    "detail": f"{type(exc).__name__}"}) + "\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
 
     @app.post("/api/settlements")
     def settlements(req: SettlementRequest) -> dict:

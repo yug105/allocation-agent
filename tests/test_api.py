@@ -6,6 +6,7 @@ records, every record is accounted for, and nothing crashes on bad input.
 """
 
 import io
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1602,3 +1603,105 @@ def test_two_simultaneous_runs_do_not_corrupt_each_others_audit_trails(client):
         assert len(trail["decisions"]) == body["n_records"], \
             "a concurrent run lost or gained decisions"
         assert trail["run"]["status"] == "completed"
+
+
+# --------------------------------------------------------------------------- #
+# Watching it run.
+#
+# A batch that computes for six seconds and then prints a table asks a viewer
+# to take the pipeline on trust. Streaming each decision as it is made shows
+# the same pipeline doing the work — the counters move, the queue fills, and
+# nothing about the result changes because it is the same code path.
+# --------------------------------------------------------------------------- #
+
+def _events(client, limit=25):
+    with client.stream("GET", f"/api/stream?limit={limit}") as r:
+        assert r.status_code == 200
+        assert "text/event-stream" in r.headers["content-type"]
+        out = []
+        for line in r.iter_lines():
+            if line.startswith("data: "):
+                out.append(json.loads(line[6:]))
+    return out
+
+
+def test_the_stream_emits_one_event_per_payment_then_a_summary(client):
+    events = _events(client, 25)
+    records = [e for e in events if e["type"] == "record"]
+    done = [e for e in events if e["type"] == "done"]
+    assert len(records) == 25
+    assert len(done) == 1
+    assert done[0]["summary"]["posted"] + done[0]["summary"]["queued"] \
+        + done[0]["summary"]["suspected_grouped"] + done[0]["summary"]["no_candidate"] \
+        + done[0]["summary"].get("unscorable", 0) \
+        + done[0]["summary"].get("model_error", 0) == 25
+
+
+def test_each_streamed_event_carries_what_the_ui_needs(client):
+    for e in _events(client, 10):
+        if e["type"] != "record":
+            continue
+        assert {"i", "record_id", "amount", "outcome", "stage"} <= set(e)
+        assert e["outcome"] in {"posted", "queued", "suspected_grouped",
+                                "no_candidate", "unscorable", "model_error"}
+
+
+def test_streaming_reaches_the_same_verdicts_as_the_batch(client):
+    """Same pipeline, so a viewer watching it is watching the real thing."""
+    streamed = [e for e in _events(client, 60) if e["type"] == "record"]
+    batch = client.post("/api/run", json={"limit": 60}).json()
+    from collections import Counter
+    assert Counter(e["outcome"] for e in streamed) == \
+        Counter({k: v for k, v in batch["summary"].items() if v})
+
+
+def test_a_streamed_run_is_audited_like_any_other(client):
+    events = _events(client, 20)
+    run_id = next(e for e in events if e["type"] == "done")["run_id"]
+    trail = client.get(f"/api/run/{run_id}/audit").json()
+    assert len(trail["decisions"]) == 20
+    assert trail["run"]["status"] == "completed"
+
+
+def test_the_stream_is_capped_like_the_batch_endpoint(client):
+    events = _events(client, 99999)
+    assert len([e for e in events if e["type"] == "record"]) <= 4000
+
+
+def test_the_page_can_watch_a_run_as_well_as_batch_it(client):
+    page = client.get("/").text
+    assert "/api/stream" in page
+    assert "EventSource" in page
+    assert "id=lv-feed" in page
+
+
+def test_watch_mode_reduces_motion_when_asked(client):
+    """The feed animates each arrival; a visitor who asked the OS not to
+    animate things should not get it anyway."""
+    assert "prefers-reduced-motion" in client.get("/").text
+
+
+def test_the_training_evidence_is_served(client):
+    body = client.get("/api/training").json()
+    assert body["split"]["train"] > body["split"]["test"] > 0
+    assert 0 < body["ranker_top1"]["test"] <= 1
+    assert body["calibration"]["ece_after"] < body["calibration"]["ece_before"]
+    assert body["importances"], "no feature importances"
+
+
+def test_the_trust_screen_shows_how_the_models_were_trained(client):
+    """The evidence for every headline number lived only in a terminal."""
+    page = client.get("/").text
+    assert "/api/training" in page
+    assert "id=training" in page
+
+
+def test_the_page_has_no_broken_template_placeholders(client):
+    """A malformed `${...}` renders as literal source in front of a visitor."""
+    import re
+    page = client.get("/").text
+    script = page[page.index("<script>"):]
+    # An interpolation whose braces do not balance is a rendering bug.
+    for m in re.finditer(r"\$\{([^{}]*)\}", script):
+        assert m.group(1).count("(") == m.group(1).count(")"), \
+            f"unbalanced interpolation: {m.group(0)[:60]}"

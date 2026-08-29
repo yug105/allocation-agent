@@ -2280,3 +2280,48 @@ So the caps are stated in the README as the demo's limits rather than the
 design's: 10 MB, 20,000 bank rows, 100,000 ledger rows, one worker, no rate
 limit. The race was different in kind — it corrupts correctness at two users,
 not at a million.
+
+---
+
+## Watching it happen, and showing the training
+
+A Track 03 submission was worth studying: a live voice call, an email arriving
+mid-demo, a working Razorpay test-mode link. Their engineering was not obviously
+deeper than this — but **something happened in front of the viewer**, and here a
+batch computed for six seconds and printed a table. The gap was presentation,
+not substance, and pretending otherwise would have been comfortable and wrong.
+
+**`/api/stream` runs the same reconciliation one decision at a time.** Server-sent
+events, one per payment, then a summary. The counters move, the bar fills and
+the feed scrolls while the work happens rather than after it. At ~22 ms per
+record on the deployed instance that is a visible tick; locally it runs at 172
+a second.
+
+The thing that makes it honest is a test: `test_streaming_reaches_the_same_
+verdicts_as_the_batch` compares the streamed outcomes against `/api/run` on the
+same slice. A demo path that quietly diverged from the measured one would make
+every number on the page evidence for nothing, and this project has already
+made that mistake in other forms.
+
+**The training evidence was real and invisible.** `model_diagnostics.py` and
+`calibrate_ranker.py` measure the train/test gap, recall and F1 at the operating
+point, and how far the confidence sat from a probability before calibration —
+all of it needing the 60 MB training CSV the deployed image does not carry. So
+the evidence for every headline number lived in a terminal on my laptop.
+
+`export_training_evidence.py` computes it and writes `artifacts/training.json`,
+served at `/api/training` and rendered on the Trust screen:
+
+```
+ranker top-1    train 98.0%   val 95.7%   test 96.0%    gap +1.98%
+detector PR-AUC train 0.900               test 0.872    gap +0.028
+detector at 0.7   precision 68.4%  recall 87.2%  F1 0.767
+calibration ECE   0.0920 -> 0.0116
+top features      n_candidates, key_total_major, amount_delta_abs
+```
+
+Nothing is hand-copied: every figure is produced by the same functions that
+report it on the command line, which is the rule this repo keeps having to
+relearn. The feature importances are new to the page and answer a question a
+judge will ask out loud — *what did it actually learn?* — with `n_candidates`
+and the amount deltas on top, which is what a reconciler should lean on.
