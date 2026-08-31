@@ -126,18 +126,42 @@ def test_a_recorded_decision_cannot_be_deleted(log):
 
 def test_a_correction_is_a_new_row_not_an_edit(log):
     """A reviewer overturning a decision must leave both visible."""
-    log.start_run(run_cfg())
+    run_id = log.start_run(run_cfg())
     d = decide(confidence=0.6, amount_minor=1_000_000, config=GateConfig())
     log.record("b1", d, keys=["K1"], n_candidates=5, path="ranked")
-    log.record_correction("b1", corrected_keys=["K2"], reviewer="alice",
-                          note="settlement split across two batches")
+    log.record_correction("b1", run_id=run_id, correct_key="K2", locus="ranking",
+                          detail="the right key was offered and ranked second",
+                          reviewer="alice",
+                          reviewer_notes="settlement split across two batches")
 
     rows = log.decisions()
     assert len(rows) == 2
     assert rows[0]["outcome"] == Outcome.QUEUE.value
-    assert rows[1]["path"] == "human"
-    assert rows[1]["reviewer"] == "alice"
+    assert rows[1]["path"] == "correction"
+    assert rows[1]["reviewer"] == "alice", "the trail does not say who overturned it"
     assert json.loads(rows[1]["chosen_keys"]) == ["K2"]
+    assert json.loads(rows[1]["evidence"])["locus"] == "ranking"
+
+
+def test_a_correction_takes_the_amount_from_its_own_run(log):
+    """Scoped by run_id: without it a record corrected in one run inherits the
+    amount and policy of its last decision in another."""
+    d_small = decide(confidence=0.6, amount_minor=100, config=GateConfig())
+    d_big = decide(confidence=0.6, amount_minor=9_000_000, config=GateConfig())
+
+    first = log.start_run(run_cfg())
+    log.record("b1", d_small, keys=["K1"], n_candidates=2, path="ranked", run_id=first)
+    log.finish_run(first)
+
+    second = log.start_run(run_cfg())
+    log.record("b1", d_big, keys=["K1"], n_candidates=9, path="ranked", run_id=second)
+    log.record_correction("b1", run_id=second, correct_key="K2", locus="ranking",
+                          detail="", reviewer="bob")
+    log.commit()
+
+    correction = log.decisions(run_id=second)[-1]
+    assert correction["amount_minor"] == 9_000_000
+    assert correction["n_candidates"] == 9
 
 
 # --------------------------------------------------------------------------- #

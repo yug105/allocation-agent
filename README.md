@@ -208,7 +208,7 @@ One caveat on that table: those top-1 figures cap candidates at 24 per record so
 | multiplicity | gradient-boosted trees | same |
 | gate | rules | anything deciding where money goes must be reproducible |
 | residual diagnosis | **arithmetic** | each cause predicts a residual; rank by fit |
-| column mapping | **LLM** | no deterministic parser generalises across formats |
+| column mapping | **regex first, LLM for the rest** | regex names the common headers; the model is asked only about the ones left, and only if a key is configured. Its answer is rejected unless it names columns the file actually has |
 | narration | **LLM** | language is where the ambiguity is |
 
 **The model ranks. The engine decides. The person commits.**

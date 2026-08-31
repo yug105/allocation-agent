@@ -48,12 +48,60 @@ _PATTERNS: dict[str, list[str]] = {
 }
 
 
-def sniff_columns(headers: list[str]) -> dict[str, str]:
+def _llm_sniff_columns(headers: list[str], backend) -> dict[str, str]:
+    """Ask an LLM to map headers when regex doesn't recognise them.
+
+    Real-world files call their columns anything: ``Txn Amt (INR)``,
+    ``Val Dt``, ``A/c No``, ``Inv Ref``. A regex vocabulary has edges; a model
+    that has read thousands of financial exports can interpolate. The result is
+    validated the same way the regex result is — if a required field is missing
+    from the response, the caller raises rather than guessing.
+    """
+    import json as _json
+
+    prompt = (
+        "TASK: You are mapping CSV column headers from a financial file to canonical fields.\n\n"
+        "CONTEXT: In bank/ledger reconciliation, every file has these concepts:\n"
+        "- 'amount': the monetary value (may be called Txn Amt, Value, Credit, Debit, etc)\n"
+        "- 'date': the transaction or value date (may be called Val Dt, Posted, Booked, etc)\n"
+        "- 'account': the account identifier (may be called Acct No, A/c, IBAN, etc)\n"
+        "- 'key': the allocation key, invoice, or reference (may be called Ref, Invoice, ID, etc)\n\n"
+        f"HEADERS: {headers}\n\n"
+        "Return a JSON object mapping each canonical field to the exact header string that "
+        "carries it. Only include fields you can confidently identify. Example:\n"
+        '{"amount": "Txn Amt (INR)", "date": "Val Dt", "account": "A/c No"}\n\n'
+        "Return ONLY the JSON object, no prose."
+    )
+    try:
+        raw = backend.complete(prompt)
+        # Strip markdown fences if present.
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            text = text.rsplit("```", 1)[0]
+        mapping = _json.loads(text)
+        if not isinstance(mapping, dict):
+            return {}
+        # Only keep mappings whose values are actual headers in the file.
+        header_set = {h.strip() for h in headers if h}
+        return {
+            field: header
+            for field, header in mapping.items()
+            if field in ("amount", "date", "account", "key") and header in header_set
+        }
+    except Exception:  # noqa: BLE001 — a broken LLM must not break parsing
+        return {}
+
+
+def sniff_columns(headers: list[str], *, backend=None) -> dict[str, str]:
     """Map canonical field -> the column in *headers* that carries it.
 
     Two passes per field so that a file containing both ``amount`` and
     ``settled_amount`` binds the plain one. Fields with no match are absent
     from the result; the caller decides which of those are fatal.
+
+    When *backend* is provided and regex leaves required fields unmapped, the
+    LLM is consulted. Any LLM failure degrades silently to the regex result.
     """
     found: dict[str, str] = {}
     for field, patterns in _PATTERNS.items():
@@ -64,6 +112,16 @@ def sniff_columns(headers: list[str]) -> dict[str, str]:
                     break
             if field in found:
                 break
+
+    # If regex missed required fields, ask the LLM.
+    required = {"amount", "date", "account"}
+    if backend is not None and not required.issubset(found):
+        llm_result = _llm_sniff_columns(headers, backend)
+        # LLM fills gaps; regex wins on fields it already found.
+        for field, header in llm_result.items():
+            if field not in found:
+                found[field] = header
+
     return found
 
 
@@ -188,9 +246,9 @@ _LAYOUT_NAMES = {
 }
 
 
-def _parse(text: str, *, key_field: str, id_prefix: str):
+def _parse(text: str, *, key_field: str, id_prefix: str, backend=None):
     rows, headers, decimal = _rows(text)
-    cols = sniff_columns(headers)
+    cols = sniff_columns(headers, backend=backend)
 
     missing = [f for f in ("account", "amount", "date") if f not in cols]
     if missing:
@@ -223,7 +281,7 @@ def _parse(text: str, *, key_field: str, id_prefix: str):
     return out, _LAYOUT_NAMES.get(fmt, fmt)
 
 
-def parse_bank_csv(text: str, *, report_layout: bool = False):
+def parse_bank_csv(text: str, *, report_layout: bool = False, backend=None):
     """Money that arrived: the side being explained.
 
     With *report_layout*, also returns which date layout was chosen.
@@ -231,13 +289,13 @@ def parse_bank_csv(text: str, *, report_layout: bool = False):
     who wrote the file; one reading is picked for the whole file, and a caller
     never told which has no way to notice the wrong one.
     """
-    parsed, layout = _parse(text, key_field="key", id_prefix="row-")
+    parsed, layout = _parse(text, key_field="key", id_prefix="row-", backend=backend)
     recs = [BankRecord(i, a, m, d) for i, a, m, d in parsed]
     return (recs, layout) if report_layout else recs
 
 
-def parse_ledger_csv(text: str, *, report_layout: bool = False):
+def parse_ledger_csv(text: str, *, report_layout: bool = False, backend=None):
     """What the books say it should be: the side being matched against."""
-    parsed, layout = _parse(text, key_field="key", id_prefix="row-")
+    parsed, layout = _parse(text, key_field="key", id_prefix="row-", backend=backend)
     rows = [KeyRow(k, a, m, d) for k, a, m, d in parsed]
     return (rows, layout) if report_layout else rows

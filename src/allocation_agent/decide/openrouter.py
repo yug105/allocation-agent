@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -38,6 +39,12 @@ class OpenRouterBackend:
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         self.model = model or os.environ.get("LLM_MODEL", _DEFAULT_MODEL)
         self.timeout = timeout
+        
+        self.last_latency_ms = 0.0
+        self.last_prompt_chars = 0
+        self.last_response_chars = 0
+        self.total_calls = 0
+        self.total_latency_ms = 0.0
 
         if not self.api_key:
             raise RuntimeError("OPENROUTER_API_KEY is not set")
@@ -66,6 +73,28 @@ class OpenRouterBackend:
             headers={"Authorization": f"Bearer {self.api_key}",
                      "Content-Type": "application/json"},
         )
+        t0 = time.perf_counter()
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             payload = json.loads(resp.read())
-        return payload["choices"][0]["message"]["content"]
+        t1 = time.perf_counter()
+        
+        response_text = payload["choices"][0]["message"]["content"]
+        
+        self.last_latency_ms = (t1 - t0) * 1000.0
+        self.last_prompt_chars = len(prompt)
+        self.last_response_chars = len(response_text)
+        self.total_calls += 1
+        self.total_latency_ms += self.last_latency_ms
+        
+        return response_text
+
+    @property
+    def stats(self) -> dict[str, float | int | str]:
+        return {
+            "model": self.model,
+            "last_latency_ms": self.last_latency_ms,
+            "last_prompt_chars": self.last_prompt_chars,
+            "last_response_chars": self.last_response_chars,
+            "total_calls": self.total_calls,
+            "total_latency_ms": self.total_latency_ms,
+        }

@@ -242,39 +242,50 @@ class AuditLog:
     def record_correction(
         self,
         record_id: str,
-        *,
-        corrected_keys: list[str],
-        reviewer: str,
-        note: str = "",
-        run_id: str | None = None,
+        run_id: str,
+        correct_key: str,
+        locus: str,
+        detail: str,
+        reviewer: str = "",
+        reviewer_notes: str = "",
     ) -> None:
         """Append a human correction as a new row.
 
         The original decision stays visible. An audit trail that hides what the
-        machine originally proposed cannot show that a human changed anything.
+        machine originally proposed cannot show that a human changed anything —
+        and one that does not name *who* overturned it cannot show who did.
+
+        `locus` is why the machine was wrong, attributed by `learn.router`: a
+        correction that does not say which stage failed cannot be routed to the
+        fix, because widening blocking will not repair a ranking miss.
         """
-        rid = run_id or self._run_id
-        if rid is None:
-            raise RuntimeError("no run in progress")
         with self._lock:
+            # Scoped to the run. Without it a record corrected in one run
+            # inherits the amount and policy of its last decision in another,
+            # which is the same shared-state defect `record()` already had.
             prior = self._conn.execute(
                 "SELECT amount_minor, n_candidates, policy_version FROM decisions "
-                "WHERE record_id = ? ORDER BY seq DESC LIMIT 1",
-                (record_id,),
+                "WHERE record_id = ? AND run_id = ? ORDER BY seq DESC LIMIT 1",
+                (record_id, run_id),
             ).fetchone()
+        
         if prior is None:
             raise KeyError(f"no prior decision for {record_id}")
 
+        evidence = {"locus": locus, "detail": detail, "reviewer_notes": reviewer_notes}
+        
         with self._lock:
             self._conn.execute(
-            "INSERT INTO decisions (run_id, record_id, decided_at, path, outcome, chosen_keys, "
-            "confidence, threshold_required, amount_minor, n_candidates, reason, policy_version, "
-            "evidence, reviewer) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (rid, record_id, _now(), "human", "post", json.dumps(corrected_keys),
+                "INSERT INTO decisions (run_id, record_id, decided_at, path, outcome, chosen_keys, "
+                "confidence, threshold_required, amount_minor, n_candidates, reason, policy_version, "
+                "evidence, reviewer) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, record_id, _now(), "correction", "post", json.dumps([correct_key]),
                  None, 0.0, prior["amount_minor"], prior["n_candidates"],
-                 note or "corrected by reviewer", prior["policy_version"], None, reviewer),
+                 reviewer_notes or "corrected by reviewer", prior["policy_version"],
+                 json.dumps(evidence), reviewer or None),
             )
             self._conn.commit()
+
 
     def commit(self) -> None:
         with self._lock:
@@ -289,6 +300,19 @@ class AuditLog:
                 "SELECT * FROM decisions WHERE run_id = ? ORDER BY seq", (rid,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def last_decision(self, record_id: str, *, run_id: str) -> dict[str, Any] | None:
+        """The most recent decision recorded for one record in one run.
+
+        Exists so callers do not reach through `_conn` and `_lock` to read the
+        log. Those are private because every write goes through the lock; a
+        caller that borrows them is one refactor away from writing without it.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM decisions WHERE record_id = ? AND run_id = ? "
+                "ORDER BY seq DESC LIMIT 1", (record_id, run_id)).fetchone()
+        return dict(row) if row else None
 
     def summary(self, run_id: str | None = None) -> dict[str, int]:
         rid = run_id or self._run_id

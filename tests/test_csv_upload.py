@@ -219,3 +219,86 @@ def test_an_entirely_empty_file_is_refused_not_crashed():
 def test_a_file_of_only_newlines_is_refused():
     with pytest.raises(UploadError):
         parse_bank_csv("\n\n\n")
+
+
+# --------------------------------------------------------------------------- #
+# Column mapping when the regex vocabulary runs out.
+#
+# The README's architecture table claimed "LLM, regex fallback" for this stage.
+# `_llm_sniff_columns` existed, validated its answer, and was never reached:
+# `_parse` called `sniff_columns(headers)` with no backend. The table described
+# a fallback chain that did not run — the same "constructed but never called"
+# defect the narrator had, in a new place.
+#
+# Regex still goes first and still wins every field it recognises. The model is
+# consulted only for what is left, and its answer is only accepted if it names
+# headers the file actually has.
+# --------------------------------------------------------------------------- #
+
+class _Backend:
+    """Returns a fixed mapping and counts how often it was asked."""
+
+    def __init__(self, reply):
+        self.reply = reply
+        self.calls = 0
+
+    def complete(self, prompt):
+        self.calls += 1
+        return self.reply
+
+
+def test_regex_alone_still_handles_the_names_it_knows():
+    b = _Backend('{"amount": "wrong"}')
+    cols = sniff_columns(["Txn Amt (INR)", "Val Dt", "A/c No"], backend=b)
+    assert cols["amount"] == "Txn Amt (INR)"
+    assert b.calls == 0, "the model was consulted for something regex already knew"
+
+
+def test_the_model_is_asked_only_when_a_required_field_is_missing():
+    b = _Backend('{"amount": "Beloop", "date": "Stardate", "account": "Vault"}')
+    cols = sniff_columns(["Beloop", "Stardate", "Vault"], backend=b)
+    assert b.calls == 1
+    assert cols == {"amount": "Beloop", "date": "Stardate", "account": "Vault"}
+
+
+def test_a_header_the_file_does_not_have_is_rejected():
+    """The guard that matters: a model naming a column that is not there would
+    otherwise produce a KeyError deep in parsing, or silently read nothing."""
+    b = _Backend('{"amount": "Invented", "date": "Stardate", "account": "Vault"}')
+    cols = sniff_columns(["Beloop", "Stardate", "Vault"], backend=b)
+    assert "amount" not in cols
+    assert cols["date"] == "Stardate"
+
+
+def test_regex_wins_where_the_two_disagree():
+    b = _Backend('{"amount": "Vault", "date": "Beloop", "account": "amount"}')
+    cols = sniff_columns(["amount", "Beloop", "Vault"], backend=b)
+    assert cols["amount"] == "amount"
+
+
+def test_a_broken_model_degrades_to_the_regex_result():
+    class Exploding:
+        def complete(self, prompt):
+            raise RuntimeError("model down")
+
+    cols = sniff_columns(["amount", "Stardate", "Vault"], backend=Exploding())
+    assert cols["amount"] == "amount"
+
+
+def test_a_model_returning_prose_is_ignored():
+    cols = sniff_columns(["Beloop"], backend=_Backend("I think it's probably Beloop!"))
+    assert cols == {}
+
+
+def test_the_parser_actually_uses_the_backend_it_is_given():
+    """The wiring the README described and the code did not do."""
+    b = _Backend('{"amount": "Beloop", "date": "Stardate", "account": "Vault"}')
+    recs = parse_bank_csv("Beloop,Stardate,Vault\n12.50,2026-03-01,ACC-1\n", backend=b)
+    assert b.calls == 1
+    assert recs[0].amount_minor == 1250
+    assert recs[0].account == "ACC-1"
+
+
+def test_without_a_backend_an_unmappable_file_still_says_which_column_is_missing():
+    with pytest.raises(UploadError, match="amount"):
+        parse_bank_csv("Beloop,Stardate,Vault\n12.50,2026-03-01,ACC-1\n")

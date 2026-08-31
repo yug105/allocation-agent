@@ -1850,3 +1850,102 @@ def test_the_page_warns_that_only_test_keys_are_accepted(client):
 def test_the_secret_field_is_masked(client):
     page = client.get("/").text
     assert 'id=rzp-secret type=password' in page
+
+
+def test_the_upload_path_passes_its_backend_to_the_column_mapper(client):
+    """The README's architecture table claimed 'LLM, regex fallback' for column
+    mapping while `_parse` called the sniffer with no backend at all."""
+    import inspect
+
+    import allocation_agent.api as api_mod
+    src = inspect.getsource(api_mod.create_app)
+    assert "backend=narrator.backend" in src, "the sniffer is still given nothing"
+
+
+def test_column_mapping_works_with_no_model_configured(client):
+    """No key is the deployed state, and it must stay a pure regex path."""
+    body = client.post("/api/reconcile", files=_pair(
+        "Txn Amt (INR),Val Dt,A/c No\n1250.00,2026-03-01,ACC-1\n",
+        "Invoice,A/c No,Txn Amt (INR),Val Dt\nINV-1,ACC-1,1250.00,2026-03-01\n")).json()
+    assert body["n_records"] == 1
+    assert body["results"][0]["matched_key"] == "INV-1"
+
+
+# --------------------------------------------------------------------------- #
+# The feedback loop, visible as an API rather than hidden in a script.
+#
+# `learn/router.py` already attributes a failure to the stage that caused it,
+# and `learn/casebase.py` already stores precedent — both were reachable only
+# from `scripts/run_learning.py`, so correcting a decision in the demo did
+# nothing at all. This is the endpoint that connects them.
+# --------------------------------------------------------------------------- #
+
+def _a_queued_record(client):
+    body = client.post("/api/run", json={"limit": 300}).json()
+    ex = next(e for e in body["exceptions"] if e["reason"] == "queued")
+    return body["run_id"], ex["record_id"]
+
+
+def test_a_correction_is_attributed_to_the_stage_that_failed(client):
+    """Widening blocking cannot fix a ranking miss, and retraining the ranker
+    cannot fix a record blocking never offered. The locus decides the fix."""
+    run_id, record_id = _a_queued_record(client)
+    body = client.post("/api/correct", json={
+        "run_id": run_id, "record_id": record_id,
+        "correct_key": "THE-RIGHT-KEY", "reviewer": "yug"}).json()
+    assert body["locus"] in {"blocking", "ranking", "multiplicity", "threshold", "none"}
+    assert body["detail"]
+
+
+def test_a_correction_leaves_both_decisions_visible(client):
+    run_id, record_id = _a_queued_record(client)
+    client.post("/api/correct", json={
+        "run_id": run_id, "record_id": record_id,
+        "correct_key": "THE-RIGHT-KEY", "reviewer": "yug"})
+    trail = client.get(f"/api/run/{run_id}/audit").json()
+    rows = [d for d in trail["decisions"] if d["record_id"] == record_id]
+    assert len(rows) == 2, "the machine's original proposal was overwritten"
+    assert rows[0]["path"] != "correction"
+    assert rows[1]["path"] == "correction"
+    assert rows[1]["reviewer"] == "yug"
+
+
+def test_a_correction_becomes_precedent(client):
+    """Retained as a new case, or as a confirmation of one already held.
+
+    Five records failing the same way is one precedent with a tally, not five
+    copies — the collapse is the design. What was broken was the situation
+    vector: `[margin]` alone made the cosine of any two cases exactly 1.0, so
+    the base could hold one case per locus however different the failures.
+    """
+    before = client.get("/api/cases").json()
+    run_id, record_id = _a_queued_record(client)
+    client.post("/api/correct", json={
+        "run_id": run_id, "record_id": record_id,
+        "correct_key": "THE-RIGHT-KEY", "reviewer": "yug"})
+    after = client.get("/api/cases").json()
+
+    grew = after["n_cases"] > before["n_cases"]
+    confirmed = after["n_confirmations"] > before["n_confirmations"]
+    assert grew or confirmed, "the correction was neither retained nor counted"
+
+
+def test_the_situation_vector_can_tell_two_failures_apart(client):
+    """A one-element vector cannot: cosine of two positive scalars is 1.0."""
+    import numpy as np
+
+    from allocation_agent.learn.casebase import _cosine
+    a = np.array([3.8, 70.0, 0.07, 0.14, 0.0])
+    b = np.array([1.2, 4.0, 8.90, 0.99, 1.0])
+    assert _cosine(a, b) < 0.95, "unlike failures still look identical"
+    assert _cosine(np.array([0.07]), np.array([8.90])) == pytest.approx(1.0), \
+        "the old one-element vector; kept here to show why it could not work"
+
+
+
+def test_correcting_a_record_that_was_never_decided_is_refused(client):
+    run_id, _ = _a_queued_record(client)
+    r = client.post("/api/correct", json={
+        "run_id": run_id, "record_id": "no-such-record",
+        "correct_key": "K", "reviewer": "yug"})
+    assert r.status_code == 404

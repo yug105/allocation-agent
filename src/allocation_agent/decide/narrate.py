@@ -187,10 +187,19 @@ class Narrator:
         results: dict[str, dict[str, Any]] = {}
         if self.backend is not None:
             prompt = (
-                "For each item, name the cause from "
-                f"{list(CAUSES)} and write one sentence explaining it.\n"
-                "Use ONLY figures that appear in the item. Do not introduce any number.\n"
-                'Return JSON: [{"record_id":..., "cause":..., "sentence":...}]\n'
+                "DOMAIN CONTEXT: You are a reconciliation expert explaining discrepancies between bank records and ledger entries.\n"
+                "A residual represents a gap between the bank amount and the ledger amount.\n\n"
+                "TASK: For each item, name the cause from "
+                f"{list(CAUSES)} and write one sentence explaining it.\n\n"
+                "EXAMPLES:\n"
+                "- BANK_CHARGE: 'Gap of 15.00 against 1,000.00 matches this counterparty's usual deduction.'\n"
+                "- ROUNDING: 'Gap of 0.02 is within rounding tolerance for 3 line(s).'\n"
+                "- PARTIAL_PAYMENT: 'Gap of 450.00 equals one outstanding line; the payment appears partial.'\n"
+                "- UNEXPLAINED: 'Gap of 83.21 against 500.00 does not fit any known cause. Needs review.'\n\n"
+                "CONSTRAINTS:\n"
+                "- Use ONLY figures that appear in the item (like amounts, residuals, line counts). Do not introduce any number.\n\n"
+                "OUTPUT SCHEMA:\n"
+                'Return JSON: [{"record_id": string, "cause": string, "sentence": string}]\n'
                 "ITEMS:" + json.dumps(batch, default=str)
             )
             try:

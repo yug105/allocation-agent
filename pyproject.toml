@@ -31,6 +31,10 @@ packages = ["src/allocation_agent"]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
 markers = ["slow: needs the full 58MB dataset"]
+filterwarnings = [
+    "ignore:X does not have valid feature names:UserWarning:sklearn",
+    "ignore::DeprecationWarning:starlette.testclient",
+]
 
 [tool.ruff]
 line-length = 100

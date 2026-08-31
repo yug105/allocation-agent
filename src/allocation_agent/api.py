@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import pickle
 import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -41,6 +43,8 @@ from allocation_agent.adapters.razorpay import (
 from allocation_agent.adapters.razorpay import _default_fetch as _rzp_fetch
 from allocation_agent.decide.gate import GateConfig, decide
 from allocation_agent.decide.narrate import Narrator
+from allocation_agent.learn.casebase import Case, CaseBase
+from allocation_agent.learn.router import diagnose
 from allocation_agent.match.blocker import BlockingConfig
 from allocation_agent.match.engine import MULT_THRESHOLD, Models, match_one
 from allocation_agent.match.features import FEATURE_NAMES, build_key_stats
@@ -113,6 +117,22 @@ class RunRequest(BaseModel):
     limit: int = Field(default=200, gt=0, le=10**9)
     review_all: bool = False
     mult_threshold: float = Field(default=MULT_THRESHOLD, ge=0.0, le=1.0)
+
+
+class CorrectionRequest(BaseModel):
+    """A reviewer overturning a decision.
+
+    The correction is the point at which the system finds out it was wrong, so
+    it is routed rather than just stored: `diagnose()` attributes the failure to
+    the stage that caused it, because widening blocking cannot fix a ranking
+    miss and retraining the ranker cannot fix a record blocking never offered.
+    """
+
+    run_id: str
+    record_id: str
+    correct_key: str
+    reviewer: str = ""
+    reviewer_notes: str = ""
 
 
 class ConnectRequest(BaseModel):
@@ -244,6 +264,7 @@ def create_app() -> FastAPI:
     # stated on /api/health rather than left for someone to discover.
     audit_path = Path(os.environ.get("AUDIT_DB") or (ARTIFACTS / "runs.db"))
     audit = AuditLog(audit_path)
+    case_base = CaseBase()
     # Templates by default -- no key, no cost, no network on any path. A key in
     # the environment switches on the model backend, which was previously
     # impossible: `openrouter.py` read OPENROUTER_API_KEY and nothing ever
@@ -730,6 +751,100 @@ def create_app() -> FastAPI:
         return {"run_id": run_id, "run": meta,
                 "decisions": audit.decisions(run_id=run_id)}
 
+    @app.post("/api/correct")
+    def correct_record(req: CorrectionRequest) -> dict:
+        prior = audit.last_decision(req.record_id, run_id=req.run_id)
+        if not prior:
+            raise HTTPException(404, "Original decision not found")
+
+        chosen_keys = json.loads(prior["chosen_keys"])
+        outcome = prior["outcome"]
+        path = prior["path"]
+        
+        posted = (outcome == "posted")
+        routed_multiple = (path == "suspected_grouped")
+        truly_multiple = False
+        
+        candidates = set(chosen_keys)
+        if prior["n_candidates"] > 0:
+            candidates.add(req.correct_key)
+            
+        diag = diagnose(
+            correct_keys=[req.correct_key],
+            candidates=candidates,
+            ranked_keys=chosen_keys,
+            posted=posted,
+            routed_multiple=routed_multiple,
+            truly_multiple=truly_multiple
+        )
+        
+        audit.record_correction(
+            record_id=req.record_id,
+            run_id=req.run_id,
+            correct_key=req.correct_key,
+            locus=diag.locus.value,
+            detail=diag.detail,
+            reviewer=req.reviewer or "reviewer",
+            reviewer_notes=req.reviewer_notes,
+        )
+        
+        case_id = f"{req.run_id}:{req.record_id}"
+        # A situation vector needs more than one dimension. This was
+        # `[margin]`, and the cosine of two one-element positive vectors is
+        # always exactly 1.0 — so every case with the same locus looked like a
+        # duplicate and the base could hold one case per locus, no matter how
+        # different the failures were. These five are what the record actually
+        # carries, on scales that make two unlike failures point apart.
+        evidence_dict: dict[str, Any] = {}
+        if prior["evidence"]:
+            try:
+                evidence_dict = json.loads(prior["evidence"])
+            except (ValueError, TypeError):
+                evidence_dict = {}
+
+        amount = abs(prior["amount_minor"] or 0) / 100
+        situation = np.array([
+            math.log10(max(amount, 1.0)),          # size, on a scale that compresses
+            float(prior["n_candidates"] or 0),     # how crowded the block was
+            float(evidence_dict.get("margin", 0.0)),
+            float(prior["confidence"] or 0.0),
+            1.0 if evidence_dict.get("exact_amount") else 0.0,
+        ], dtype=float)
+
+        case = Case(
+            case_id=case_id,
+            situation=situation,
+            locus=diag.locus.value,
+            resolution=[req.correct_key]
+        )
+        case_base.retain(case, human_certain=True)
+        
+        return {
+            "record_id": req.record_id,
+            "run_id": req.run_id,
+            "locus": diag.locus.value,
+            "detail": diag.detail
+        }
+
+    @app.get("/api/cases")
+    def get_cases() -> dict:
+        # Confirmations are the point of the collapse: five records failing
+        # the same way are one precedent seen five times, not five precedents.
+        return {
+            "n_cases": len(case_base.cases),
+            "n_confirmations": sum(c.confirmations for c in case_base.cases),
+            "recent_cases": [
+                {
+                    "case_id": c.case_id,
+                    "locus": c.locus,
+                    "resolution": c.resolution,
+                    "confirmations": c.confirmations,
+                    "applications": c.applications,
+                }
+                for c in case_base.cases[-10:]
+            ],
+        }
+
     @app.post("/api/reconcile")
     async def reconcile(bank: UploadFile = File(...),
                         ledger: UploadFile = File(...)) -> dict:
@@ -757,10 +872,15 @@ def create_app() -> FastAPI:
             return raw.decode("utf-8", "replace")
 
         try:
+            # The model is consulted only for columns regex could not name,
+            # and only when a key is configured. Without one this is exactly
+            # the regex sniffer it has always been.
             records, bank_layout = parse_bank_csv(await read(bank, "bank"),
-                                                  report_layout=True)
+                                                  report_layout=True,
+                                                  backend=narrator.backend)
             rows, ledger_layout = parse_ledger_csv(await read(ledger, "ledger"),
-                                                   report_layout=True)
+                                                   report_layout=True,
+                                                   backend=narrator.backend)
         except UploadError as exc:
             raise HTTPException(400, str(exc)) from exc
 

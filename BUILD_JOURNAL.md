@@ -2370,3 +2370,59 @@ lines, `credit - debit`, so a refund reduces its payout rather than adding to
 it, and a settlement netting to zero is not offered as a credit to reconcile at
 all. Getting that backwards would have made every refunded batch unsolvable
 while looking like a solver failure.
+
+---
+
+## The architecture table described a fallback chain that never ran
+
+A critique aimed at AI depth landed one finding that mattered more than the rest:
+
+> The README says column mapping uses an LLM. The code uses regex.
+
+True, and the worst kind of true. `_llm_sniff_columns` existed, validated its
+answer against the file's real headers, degraded to `{}` on any failure — and
+`_parse` called `sniff_columns(headers)` **with no backend**, so it never ran.
+The table promised "LLM, regex fallback" and the code was regex, full stop.
+
+That is the narrator defect again — built, tested, wired to nothing — in the
+one place a judge reading both the README and the code would catch it.
+
+Wired now, and the wiring is the honest version: regex goes first and keeps
+every field it recognises; the model is asked only about what is left, and only
+when a key is configured. Its answer is discarded unless it names columns the
+file actually has, which is the same guard shape as `validate_numbers`. With no
+key — the deployed state — it is exactly the regex sniffer it always was, and
+the README now says that rather than implying a model is running.
+
+## The case base could hold one case per locus
+
+Wiring `/api/correct` exposed a defect in the retention logic that no test had
+reached, because nothing had ever called it.
+
+The situation vector was `[margin]` — one element. **The cosine of two
+one-element positive vectors is exactly 1.0**, always. So every correction with
+the same locus looked like a duplicate of the last one, and the base could hold
+at most one case per failure stage no matter how unlike the failures were. A
+"selective retention" mechanism that retains one thing is not selective.
+
+It now carries five dimensions the record actually has: log amount, candidate
+count, margin, confidence, and whether an exact amount was present. Two unlike
+failures now score 0.66 rather than 1.00.
+
+What did *not* change is the collapse itself, and measuring it corrected my own
+expectation. Five records failing the same way still produce **one case with
+four confirmations** — which is right. Five copies of one precedent is not five
+precedents; the tally is the useful part, and `/api/cases` now reports it.
+
+## What I did not do, and why
+
+The same critique argued the project reads as "we barely used AI", and
+recommended adding embeddings and richer LLM orchestration to look the part.
+
+The track's stated criterion is *"the right tool in the right place, **and where
+you chose not to use one**"*. Putting a language model on the matching path to
+appear sophisticated would be optimising against the thing being judged. The
+gaps worth closing were the ones where a claim outran the code — the column
+mapper, the unwired case base, the invisible feedback loop — and those are
+closed. `0 AI calls while matching` stays, because it is true and it is the
+argument.
