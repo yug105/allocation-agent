@@ -62,7 +62,11 @@ class RunResult:
             f"  queued            {self.queued:>8,}\n"
             f"  no candidate      {self.no_candidate:>8,}\n"
             f"  suspected grouped {self.suspected_multiple:>8,}\n"
-            f"  LLM calls         {self.llm_calls:>8,}"
+            # Not a counter. This path builds no narrator at all, so no model
+            # can be reached from it -- saying "0" would dress a structural
+            # fact as a measurement. The counted version is on /api/run, which
+            # does construct one and reports calls before and after.
+            f"  LLM on this path  {'none constructed':>16}"
         )
 
 
@@ -82,6 +86,7 @@ def run_batch(
     prior: Any = None,
     calibrator: Any = None,
     calibrator_kind: str = "none",
+    calibrated_for_this_data: bool = False,
     mult_threshold: float = MULT_THRESHOLD,
 ) -> RunResult:
     """Reconcile a batch, recording every decision as it is made.
@@ -118,7 +123,8 @@ Without a ranker every record is queued. This used to fall back to a rules
         try:
             r = match_one(record, index=key_index, key_stats=key_stats,
                           models=models, gate=gcfg, mult_threshold=mult_threshold,
-                          blocking=bcfg)
+                          blocking=bcfg,
+                          calibrated_for_this_data=calibrated_for_this_data)
         except Exception as exc:  # noqa: BLE001
             # "Degrades rather than halts" has to be true of the models too.
             # A record that breaks featurising or scoring becomes an exception

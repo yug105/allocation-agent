@@ -3,7 +3,7 @@
 import pytest
 
 from allocation_agent.decide.gate import GateConfig
-from allocation_agent.match.features import KeyStats
+from allocation_agent.match.features import KeyStats, build_key_stats
 from allocation_agent.pipeline import run_batch
 from allocation_agent.report.audit import AuditLog, RunConfig
 from allocation_agent.stores.keys import KeyIndex, KeyRow
@@ -162,3 +162,68 @@ def test_a_model_failure_becomes_an_exception_not_the_end_of_the_batch(tmp_path)
         + result.suspected_multiple == 5
     assert len(audit.decisions(run_id=result.run_id)) == 5, \
         "a record left the audit trail"
+
+
+def test_the_batch_applies_the_calibrator_it_is_given(tmp_path):
+    """`calibrator` and `calibrator_kind` were accepted and never used.
+
+    `match_one` applies a calibrator only when told the data is the population
+    it was fitted on, and this file never passed that flag — so the batch
+    scored on `sigmoid(margin)` whatever it was handed, and the script that
+    produces the README's end-to-end figures measured a configuration the
+    service does not run.
+    """
+    import json
+
+    import numpy as np
+
+    from allocation_agent.decide.gate import GateConfig
+    from allocation_agent.match.blocker import BlockingConfig
+    from allocation_agent.match.multiplicity import AccountPrior
+    from allocation_agent.pipeline import run_batch
+    from allocation_agent.report.audit import AuditLog, RunConfig
+    from allocation_agent.stores.keys import KeyIndex, KeyRow
+    from allocation_agent.types import BankRecord
+
+    class Ranker:
+        def score(self, X):
+            return np.linspace(1.0, 0.0, len(X))
+
+    class Detector:
+        def predict_proba(self, X):
+            return np.zeros(len(X))
+
+    class Calibrator:
+        """Maps any margin to a number no sigmoid can produce."""
+
+        def predict(self, margins):
+            return np.full(len(margins), 0.123)
+
+    prior = AccountPrior(median_amount_minor={}, global_median=1000.0,
+                         mult_rate={}, global_mult_rate=0.0)
+
+    rows = [KeyRow(f"K{i}", "A", 1000 + i, 10) for i in range(3)]
+    records = [BankRecord("b0", "A", 1000, 10)]
+    audit = AuditLog(tmp_path / "c.db")
+    result = run_batch(
+        records, KeyIndex(rows), build_key_stats(rows), audit,
+        run_config=RunConfig(approved_by="t", blocking={}, gate={}),
+        blocking=BlockingConfig(date_slack_days=7), gate=GateConfig(),
+        ranker=Ranker(), multiplicity=Detector(), prior=prior,
+        calibrator=Calibrator(), calibrator_kind="isotonic",
+        calibrated_for_this_data=True)
+
+    row = audit.decisions(run_id=result.run_id)[0]
+    assert row["confidence"] == pytest.approx(0.123), \
+        "the calibrator was passed and ignored"
+    assert json.loads(row["evidence"])["confidence_from"] == "isotonic"
+
+
+def test_a_result_can_be_printed(audit):
+    """`__str__` read `self.llm_calls`, which is not a field — so printing a
+    result raised, and the script that prints one crashed before its figures."""
+    idx, stats, records = setup()
+    r = run_batch(records, idx, stats, audit, run_config=cfg())
+    text = str(r)
+    assert f"{len(records):,} records" in text
+    assert "posted" in text
