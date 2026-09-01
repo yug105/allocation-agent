@@ -18,7 +18,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-from allocation_agent.decide.gate import GateConfig, decide
+from allocation_agent.decide.gate import Absent, GateConfig, decide
 from allocation_agent.match.blocker import BlockingConfig
 from allocation_agent.match.engine import MULT_THRESHOLD, Models, match_one
 from allocation_agent.match.features import KeyStats
@@ -137,7 +137,8 @@ def _reconcile_each(records, result, *, models, key_index, key_stats, audit,
     """The per-record loop, so the caller above owns commit and run status."""
     for record in records:
         if ranker is None:
-            d = decide(confidence=None, amount_minor=record.amount_minor, config=gcfg)
+            d = decide(confidence=None, amount_minor=record.amount_minor,
+                       config=gcfg, absent=Absent.NO_RANKER)
             audit.record(record.record_id, d, keys=[], n_candidates=0,
                          path="no_ranker", run_id=run_id)
             result.queued += 1
@@ -156,7 +157,8 @@ def _reconcile_each(records, result, *, models, key_index, key_stats, audit,
             # "Degrades rather than halts" has to be true of the models too.
             # A record that breaks featurising or scoring becomes an exception
             # with a reason, not the end of the batch.
-            d = decide(confidence=None, amount_minor=record.amount_minor, config=gcfg)
+            d = decide(confidence=None, amount_minor=record.amount_minor,
+                       config=gcfg, absent=Absent.MODEL_ERROR)
             audit.record(record.record_id, d, keys=[], n_candidates=0,
                          path="model_error", evidence={"error": type(exc).__name__},
                          run_id=run_id)

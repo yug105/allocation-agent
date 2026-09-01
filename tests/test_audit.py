@@ -129,7 +129,7 @@ def test_a_correction_is_a_new_row_not_an_edit(log):
     run_id = log.start_run(run_cfg())
     d = decide(confidence=0.6, amount_minor=1_000_000, config=GateConfig())
     log.record("b1", d, keys=["K1"], n_candidates=5, path="ranked")
-    log.record_correction("b1", run_id=run_id, correct_key="K2", locus="ranking",
+    log.record_correction("b1", run_id=run_id, correct_keys=["K2"], locus="ranking",
                           detail="the right key was offered and ranked second",
                           reviewer="alice",
                           reviewer_notes="settlement split across two batches")
@@ -155,7 +155,7 @@ def test_a_correction_takes_the_amount_from_its_own_run(log):
 
     second = log.start_run(run_cfg())
     log.record("b1", d_big, keys=["K1"], n_candidates=9, path="ranked", run_id=second)
-    log.record_correction("b1", run_id=second, correct_key="K2", locus="ranking",
+    log.record_correction("b1", run_id=second, correct_keys=["K2"], locus="ranking",
                           detail="", reviewer="bob")
     log.commit()
 
@@ -394,3 +394,40 @@ def test_the_suite_does_not_write_to_the_runtime_audit_log():
     configured = os.environ.get("AUDIT_DB")
     assert configured, "AUDIT_DB is unset: an app built here writes to the real log"
     assert Path(configured).resolve() != (ARTIFACTS / "runs.db").resolve()
+
+
+def _one_decision(log):
+    from allocation_agent.decide.gate import GateConfig, decide
+    d = decide(confidence=0.99, amount_minor=5_000, config=GateConfig())
+    rid = log.start_run(RunConfig(approved_by="t", blocking={}, gate={}))
+    log.record("r1", d, keys=["K1"], n_candidates=4, path="ranked", run_id=rid)
+    log.commit()
+    return rid
+
+
+def test_a_correction_is_not_logged_as_an_auto_post(tmp_path):
+    """`record_correction` hardcoded outcome='post', so a reviewer overturning
+    the machine was recorded with the same outcome as a machine auto-post. Any
+    count of posted decisions included every correction — including the ones
+    saying the machine had been wrong."""
+    log = AuditLog(tmp_path / "c.db")
+    rid = _one_decision(log)
+    log.record_correction("r1", rid, correct_keys=["K2"], locus="ranking",
+                          detail="d", reviewer="yug")
+    row = log.decisions(run_id=rid)[-1]
+    assert row["path"] == "correction"
+    assert row["outcome"] != "post", "a reviewer's correction counts as an auto-post"
+    assert log.summary(rid).get("post", 0) == 1, "corrections inflate the posted count"
+
+
+def test_a_multi_key_correction_is_logged_as_several_keys(tmp_path):
+    """Joining them into one string makes ["KEY-A, KEY-B"] — a single key whose
+    name contains a comma. Any real key containing one becomes unparseable."""
+    import json
+
+    log = AuditLog(tmp_path / "m.db")
+    rid = _one_decision(log)
+    log.record_correction("r1", rid, correct_keys=["KEY-A", "KEY-B"],
+                          locus="multiplicity", detail="d", reviewer="yug")
+    row = log.decisions(run_id=rid)[-1]
+    assert json.loads(row["chosen_keys"]) == ["KEY-A", "KEY-B"]

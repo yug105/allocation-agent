@@ -10,7 +10,7 @@ Every product on the market uses one threshold for every amount.
 
 import pytest
 
-from allocation_agent.decide.gate import GateConfig, Outcome, decide
+from allocation_agent.decide.gate import Absent, GateConfig, Outcome, decide
 
 
 def cfg(**kw) -> GateConfig:
@@ -151,3 +151,46 @@ def test_steeper_slope_demands_more_of_large_amounts():
 def test_zero_slope_gives_one_threshold_for_every_amount():
     c = GateConfig(slope=0.0, base=0.9)
     assert c.threshold_for(1) == pytest.approx(c.threshold_for(10**9))
+
+
+# --------------------------------------------------------------------------- #
+# Why there is no confidence. `decide()` documents `None` as "blocking produced
+# nothing", and three of its four callers in the engine pass `None` for records
+# that had plenty of candidates — a record routed away as grouped, one whose
+# candidates could not be scored, and one lone candidate whose amount does not
+# match. All three were written into the append-only log as
+# `outcome=no_candidate, reason="no candidate survived blocking"` beside an
+# `n_candidates` of 55, which is a row that contradicts itself.
+# --------------------------------------------------------------------------- #
+
+def test_no_candidates_is_the_only_no_candidate_outcome():
+    d = decide(confidence=None, amount_minor=5_000, absent=Absent.NO_CANDIDATES)
+    assert d.outcome is Outcome.NO_CANDIDATE
+    assert "blocking" in d.reason
+
+
+@pytest.mark.parametrize("absent", [
+    Absent.SUSPECTED_GROUPED, Absent.UNSCORABLE, Absent.NO_SUPPORT,
+])
+def test_a_record_with_candidates_is_queued_not_called_no_candidate(absent):
+    """It went to a person. That is a queue, and the reason must say which."""
+    d = decide(confidence=None, amount_minor=5_000, absent=absent)
+    assert d.outcome is Outcome.QUEUE
+    assert "no candidate survived blocking" not in d.reason
+    assert d.reason
+
+
+def test_every_absent_reason_states_a_distinct_cause():
+    reasons = {a: decide(confidence=None, amount_minor=5_000, absent=a).reason
+               for a in Absent}
+    assert len(set(reasons.values())) == len(Absent), reasons
+
+
+@pytest.mark.parametrize("absent", [Absent.NO_RANKER, Absent.MODEL_ERROR])
+def test_a_missing_model_is_not_reported_as_a_blocking_failure(absent):
+    """No ranker configured, or one that raised, says nothing about blocking.
+    Both logged 'no candidate survived blocking' and queued under a cause that
+    had not happened."""
+    d = decide(confidence=None, amount_minor=5_000, absent=absent)
+    assert d.outcome is Outcome.QUEUE
+    assert "blocking" not in d.reason

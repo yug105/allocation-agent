@@ -2426,3 +2426,69 @@ gaps worth closing were the ones where a claim outran the code — the column
 mapper, the unwired case base, the invisible feedback loop — and those are
 closed. `0 AI calls while matching` stays, because it is true and it is the
 argument.
+
+## Reading the audit log back, and finding it disagreed with the API
+
+I had checked the log by counting rows. Counting rows tells you nothing about
+what the rows *say*. Reading them against the API response for the same run is
+a different exercise, and it found three things.
+
+**A grouped record was logged as a blocking failure.** Live, on 400 records:
+the API reported `no_candidate: 0, suspected_grouped: 32`; the log recorded
+`no_candidate: 32` and no grouped records at all. Each of those rows read
+
+    path=multiplicity  outcome=no_candidate  n_candidates=55
+    reason="no candidate survived blocking"
+
+which contradicts itself in a single row. 221,597 rows in `artifacts/runs.db`
+are like this.
+
+The cause is a contract the caller broke rather than a bug in the callee.
+`decide()` documents its `confidence` argument as *"or `None` when blocking
+produced nothing"*, and exactly one of its six callers means that. The other
+five pass `None` for a record routed away as grouped, one whose candidates
+could not be scored, a lone candidate whose amount does not match, a batch run
+with no ranker configured, and a record whose model raised. Not one of those is
+a blocking failure. The gate did exactly what it was asked and reported the
+only cause it was given.
+
+What makes this worth writing down is that **an earlier entry in this journal
+already claims it fixed** — *"`usable == []` was reported as `no_candidate`
+when blocking had in fact found entries that could not be scored, which is a
+different failure. Both now have code and a test."* That fix changed the
+`outcome` field the engine *returns*. The value the log *stores* comes from
+the `GateDecision`, which was never touched, so the API response distinguished
+the two failures and the permanent record went on collapsing them. A fix
+verified through one surface and recorded as done, while the other surface
+kept the defect.
+
+`decide()` now takes an `Absent` reason. Only `NO_CANDIDATES` is a blocking
+failure; the rest went to a person, which is a queue, and each carries a reason
+naming its own cause.
+
+**A reviewer's correction was logged as an auto-post.** `record_correction`
+hardcoded `outcome="post"`, so every count of posted decisions included the
+corrections — including the ones recording that the machine had been wrong. It
+is `outcome="correction"` now, and the log's posted count equals the API's for
+the same run, which it did not before.
+
+**A multi-key correction was stored as one key with a comma in it.** Mine, from
+letting a reviewer name several keys: the API took a list, joined it with `", "`
+and handed `record_correction` a string, which stored `["KEY-A, KEY-B"]`. Two
+keys went in and one came out, and any real key containing a comma would have
+been unparseable. `record_correction` takes a list now.
+
+**The pipeline diagram had the stages in the wrong order.** It drew Blocker →
+Ranker → Multiplicity → Gate. The code runs the group check *before* the
+ranker, so a record that looks grouped is never given a single match to argue
+about, and it skips that check entirely on a lone exact amount because there
+the detector is wrong 36 times out of 41. Both are safety properties, and the
+diagram inverted one and omitted the other.
+
+**`docs/DESIGN.md` has drifted further than the code.** Its `Decision.outcome`
+is `Literal["posted","queued","no_candidate"]` against six the engine now
+returns, and its `path` is `Literal["pattern","direct","ranked","solved"]`
+against `blocked`, `unscorable`, `multiplicity`, `ranked`, `direct`,
+`correction`, `no_ranker` and `model_error` — two of the four named paths do
+not exist. Left as it is: it is a design document, the README says the code and
+it disagree, and this is the file that says how.

@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from allocation_agent.decide.gate import Outcome, decide
+from allocation_agent.decide.gate import Absent, Outcome, decide
 from allocation_agent.decide.narrate import Narrator, diagnose_residual
 from allocation_agent.match.blocker import BlockingConfig, block
 from allocation_agent.match.features import featurise
@@ -110,7 +110,8 @@ def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
         # Blocking found entries; none could be scored. Reporting that as
         # "no candidate" makes the exception breakdown describe a different
         # failure from the one that happened.
-        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
+        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate,
+                   absent=Absent.UNSCORABLE)
         return {"residual_cause": None, "residual_minor": 0, "stage": "narrowing",
                 "outcome": "unscorable", "decision": d, "keys": [],
                 "n_blocked": len(cands), "n_scored": 0, "n_candidates": len(cands),
@@ -132,7 +133,8 @@ def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
     #    see that. Everywhere else it is trusted exactly as before.
     p_mult = p_multiple(models, rec, usable, key_stats)
     if p_mult >= mult_threshold and not lone_exact:
-        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
+        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate,
+                   absent=Absent.SUSPECTED_GROUPED)
         return {"residual_cause": None, "residual_minor": 0, "stage": "grouping", "outcome": "suspected_grouped", "decision": d,
                 "keys": [], "n_blocked": len(cands), "n_scored": len(usable), "n_candidates": len(cands), "path": "multiplicity",
                 "evidence": {"p_multiple": round(p_mult, 4)}, "confidence": None,
@@ -202,7 +204,10 @@ def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
         confidence, path = None, "ranked"
         evidence = {"ranked_keys": [chosen]}
 
-    d = decide(confidence=confidence, amount_minor=rec.amount_minor, config=gate)
+    # `confidence is None` here is the lone-candidate-with-wrong-amount branch:
+    # there *was* a candidate, so it queues rather than reporting a blocking miss.
+    d = decide(confidence=confidence, amount_minor=rec.amount_minor, config=gate,
+               absent=Absent.NO_SUPPORT)
 
     if confidence is None:
         expl = (f"{chosen} is the only nearby ledger entry, but its amount is not this "

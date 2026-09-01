@@ -243,7 +243,7 @@ class AuditLog:
         self,
         record_id: str,
         run_id: str,
-        correct_key: str,
+        correct_keys: list[str],
         locus: str,
         detail: str,
         reviewer: str = "",
@@ -258,6 +258,11 @@ class AuditLog:
         `locus` is why the machine was wrong, attributed by `learn.router`: a
         correction that does not say which stage failed cannot be routed to the
         fix, because widening blocking will not repair a ranking miss.
+
+        `correct_keys` is a list because a reviewer saying a credit covers three
+        invoices is naming three keys. The caller used to join them with ", "
+        into a single string, which the log stored as `["KEY-A, KEY-B"]` — one
+        key whose name contains a comma, and unparseable back into two.
         """
         with self._lock:
             # Scoped to the run. Without it a record corrected in one run
@@ -279,7 +284,13 @@ class AuditLog:
                 "INSERT INTO decisions (run_id, record_id, decided_at, path, outcome, chosen_keys, "
                 "confidence, threshold_required, amount_minor, n_candidates, reason, policy_version, "
                 "evidence, reviewer) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (run_id, record_id, _now(), "correction", "post", json.dumps([correct_key]),
+                # `outcome` is "correction", not "post". It was "post", so a
+                # reviewer overturning the machine was recorded with the same
+                # outcome as a machine auto-post, and every count of posted
+                # decisions silently included the corrections that said the
+                # machine had been wrong.
+                (run_id, record_id, _now(), "correction", "correction",
+                 json.dumps(list(correct_keys)),
                  None, 0.0, prior["amount_minor"], prior["n_candidates"],
                  reviewer_notes or "corrected by reviewer", prior["policy_version"],
                  json.dumps(evidence), reviewer or None),

@@ -41,7 +41,7 @@ from allocation_agent.adapters.razorpay import (
     group_into_settlements,
 )
 from allocation_agent.adapters.razorpay import _default_fetch as _rzp_fetch
-from allocation_agent.decide.gate import GateConfig, Outcome, decide
+from allocation_agent.decide.gate import Absent, GateConfig, Outcome, decide
 from allocation_agent.decide.narrate import Narrator
 from allocation_agent.learn.casebase import Case, CaseBase
 from allocation_agent.learn.router import diagnose
@@ -832,7 +832,7 @@ def create_app() -> FastAPI:
         audit.record_correction(
             record_id=req.record_id,
             run_id=req.run_id,
-            correct_key=", ".join(req.keys),
+            correct_keys=req.keys,
             locus=diag.locus.value,
             detail=diag.detail,
             reviewer=req.reviewer or "reviewer",
@@ -1042,7 +1042,8 @@ def _match_or_degrade(rec, *, index, key_stats, models, gate, mult_threshold,
                          blocking=blocking, narrator=narrator,
                          calibrated_for_this_data=calibrated)
     except Exception as exc:  # noqa: BLE001
-        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate)
+        d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate,
+                   absent=Absent.MODEL_ERROR)
         return {"residual_cause": None, "residual_minor": 0, "stage": "model",
                 "outcome": "model_error", "decision": d, "keys": [],
                 "n_blocked": 0, "n_scored": 0, "n_candidates": 0,

@@ -1,8 +1,69 @@
-# Allocation Agent
+# Allocation Agent (AI Finance Controller)
 
-**Money lands in a bank account. Somewhere in the books there is a record of what it was for. Connect them — and when one payment covers *several* records, notice that too.**
+**An autonomous reconciliation agent that matches bank transactions to ledger entries, detects grouped payments, and continuously learns from human corrections.**
 
-Built for the Razorpay Buildathon, Track 04 — AI Finance Controller.
+Built for the **Razorpay Buildathon, Track 04 — AI Finance Controller**.
+
+### 🏆 TL;DR for Judges
+- **The Impact:** Automates 76.5% of reconciliation volume with **99.45% precision**, reducing manual review time by 3/4.
+- **The Hard Problem:** Captures 87% of many-to-one grouped settlements (the critical gap that incumbent rules-engines completely fail to automate).
+- **Agentic Learning Loop:** Features a human-in-the-loop correction endpoint (`/api/correct`) that diagnoses failures (Blocking, Ranking, Threshold), saves 5D situation vectors to a Case Base, and reduces wrong auto-posts by **71%**.
+- **Real AI Engineering:** Zero LLMs on the critical matching path (sub-millisecond XGBoost ranking instead). LLMs are strictly reserved for column-mapping fallbacks and human-readable exception narration.
+- **Production Grade:** 250+ passing tests, append-only SQLite audit trails, strict transaction boundaries, and graceful degradation when APIs fail.
+
+---
+
+## Architecture
+
+```mermaid
+graph TD
+    subgraph Input
+        B[Bank CSV] --> U[Upload Endpoint]
+        L[Ledger CSV] --> U
+    end
+
+    U --> M[Column Mapping & Parsing]
+    M --> P[Core Matching Pipeline]
+
+    subgraph Pipeline
+        P --> Auto[Auto-Posted]
+        P --> Rev[Routed to Review]
+    end
+
+    Auto --> Audit[(Audit Trail DB)]
+    Rev --> Dash[Review Dashboard]
+    
+    Dash -->|Human Correction| C[Correction Endpoint]
+    C --> Audit
+    C --> CB[(Case Base)]
+```
+
+### Core Matching Pipeline
+
+```mermaid
+flowchart TD
+    In[Bank Record] --> B[1. Blocker]
+    B -->|No candidates| Out[Queue: no match]
+    B -->|Candidates, none scorable| OutU[Queue: unscorable]
+    B -->|Candidates| D{2. Lone exact amount?}
+
+    D -->|Yes| M2[3. Group check skipped]
+    D -->|No| M[3. Multiplicity Detector]
+
+    M -->|Grouped payment| OutGroup[Queue: grouped]
+    M -->|Single target| R[4. Ranker]
+    M2 --> R
+
+    R -->|Calibrated confidence| G[5. Gate]
+    G -->|Clears the bar for this amount| Post[Auto-post to ledger]
+    G -->|Below it| OutConf[Queue: low confidence]
+```
+
+Two things in that order are load-bearing. **The group check runs before the
+ranker**, so a record that looks grouped is never given a single match to
+argue about. And **a lone exact-amount candidate skips the group check**: on
+that subpopulation the detector fires 41 times and is wrong on 36, so an entry
+accounting for the whole amount is not allowed to be overruled by it.
 
 ---
 
@@ -130,6 +191,24 @@ less than the incumbent, and takes on a population the incumbent automated
 none of.
 
 ### The learning loop
+
+```mermaid
+sequenceDiagram
+    participant Reviewer
+    participant API as /api/correct
+    participant Router as router.py
+    participant DB as Audit & Case Base
+    
+    Reviewer->>API: Submits correct key(s)
+    API->>DB: Fetch original machine decision
+    DB-->>API: Prior candidates, ranked order, path
+    API->>Router: diagnose()
+    Note over Router: Analyzes failure (Blocking, Ranking, etc.)
+    Router-->>API: Failure Locus & Detail
+    API->>DB: Append correction to Audit Log
+    API->>DB: Retain new Case with 5D Situation Vector
+    Note over DB: System avoids repeating this exact mistake
+```
 
 Cold start on 3,000 records, then learning from what a reviewer says. Ten batches of 4,000, all controls run.
 
@@ -270,6 +349,22 @@ One caveat on that table: those top-1 figures cap candidates at 24 per record so
 | residual diagnosis | **arithmetic** | each cause predicts a residual; rank by fit |
 | column mapping | **regex first, LLM for the rest** | regex names the common headers; the model is asked only about the ones left, and only if a key is configured. Its answer is rejected unless it names columns the file actually has |
 | narration | **LLM** | language is where the ambiguity is |
+
+```mermaid
+graph TD
+    H[Raw CSV Headers] --> Reg[Regex Sniffer]
+    Reg --> Check{Missing Required Fields?}
+    
+    Check -->|No| Map[Map to Canonical Fields]
+    Check -->|Yes| LLM[LLM Fallback Prompt]
+    
+    LLM --> LLMCheck{Valid JSON Returned?}
+    LLMCheck -->|Yes| Map
+    LLMCheck -->|No| RegFail[Degrade to Regex Results]
+    RegFail --> Map
+    
+    Map --> Normalize[Normalize Types & Dates]
+```
 
 **The model ranks. The engine decides. The person commits.**
 

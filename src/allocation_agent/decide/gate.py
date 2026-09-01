@@ -31,6 +31,44 @@ class Outcome(str, Enum):
     NO_CANDIDATE = "no_candidate"
 
 
+class Absent(str, Enum):
+    """Why a record arrived without a confidence.
+
+    `decide()` documents `None` as "blocking produced nothing", and for one
+    caller that is true. Three others passed `None` for records that had
+    candidates — routed away as grouped, unscorable, or a lone candidate whose
+    amount does not match — and every one of those was written into the
+    append-only log as `no_candidate` with the reason *no candidate survived
+    blocking*, beside an `n_candidates` of 55. The row contradicted itself, and
+    a reader counting blocking failures counted grouped records among them.
+
+    Only `NO_CANDIDATES` is a blocking failure. The rest went to a person,
+    which is a queue.
+    """
+
+    NO_CANDIDATES = "no_candidates"
+    SUSPECTED_GROUPED = "suspected_grouped"
+    UNSCORABLE = "unscorable"
+    NO_SUPPORT = "no_support"
+    NO_RANKER = "no_ranker"
+    MODEL_ERROR = "model_error"
+
+
+_ABSENT_REASON = {
+    Absent.NO_CANDIDATES: "no candidate survived blocking",
+    Absent.SUSPECTED_GROUPED:
+        "one payment appears to cover several ledger entries; no single match claimed",
+    Absent.UNSCORABLE:
+        "candidates were found but none could be scored",
+    Absent.NO_SUPPORT:
+        "the only candidate's amount is not this figure and there is no runner-up",
+    Absent.NO_RANKER:
+        "no ranker was configured, so nothing was scored",
+    Absent.MODEL_ERROR:
+        "a model failed on this record; it degrades to review rather than posting",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class GateConfig:
     """Approved before a run, never changed during one."""
@@ -83,13 +121,19 @@ def decide(
     confidence: float | None,
     amount_minor: int,
     config: GateConfig | None = None,
+    absent: Absent = Absent.NO_CANDIDATES,
 ) -> GateDecision:
     """Apply the gate to one scored record.
 
     Args:
         confidence: calibrated probability for the best candidate, or ``None``
-            when blocking produced nothing. Absent is not the same as low, and
+            when there is no score to weigh. Absent is not the same as low, and
             is reported as its own outcome.
+        absent: why the confidence is missing, when it is. Only
+            ``NO_CANDIDATES`` is a blocking failure; the others had candidates
+            and go to a person, so they queue. Defaults to ``NO_CANDIDATES``
+            for the caller that means it, which keeps every existing call
+            behaving as before.
     """
     cfg = config or GateConfig()
 
@@ -106,8 +150,9 @@ def decide(
 
     if confidence is None:
         return GateDecision(
-            outcome=Outcome.NO_CANDIDATE,
-            reason="no candidate survived blocking",
+            outcome=(Outcome.NO_CANDIDATE if absent is Absent.NO_CANDIDATES
+                     else Outcome.QUEUE),
+            reason=_ABSENT_REASON[absent],
             **common,
         )
 

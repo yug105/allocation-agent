@@ -56,10 +56,15 @@ The four stages, in order, each able to end the record:
 1. **Narrow** (`match/blocker.py`) — union of two hash lookups, `(account,
    amount)` and `(account, day ± slack)`. 98.9% recall, ~44 candidates from
    103k. No candidates → `no_candidate`.
-2. **Direct** — if exactly one candidate's amount equals the record's exactly,
-   take it at `DIRECT_CONFIDENCE` (0.9898, the measured rate) and **skip stage
-   3**. On that subpopulation the multiplicity detector is right 12.2% of the
-   time against 96.3% overall, so it does not get to overrule an exact amount.
+2. **Direct** — two separate things, and only the first is common. Whenever
+   exactly one candidate's amount equals the record's, **stage 3 is skipped**:
+   on that subpopulation the multiplicity detector is right 12.2% of the time
+   against 96.3% overall, so it does not get to overrule an exact amount. The
+   record still goes on to be *ranked*. Only when that lone exact candidate is
+   also the **only** scorable candidate — no runner-up, so no margin exists —
+   is it taken at `DIRECT_CONFIDENCE` (0.9898). Blocking never returns fewer
+   than four candidates on BenchRec, so that branch fires 6 times in 74,796
+   records there; it is the small-uploaded-file case.
 3. **Group check** (`match/multiplicity.py`) — a separate GBDT asking "is this
    one payment covering several entries?" Fires → `suspected_grouped`, no
    single match is claimed.
