@@ -66,16 +66,68 @@ Held-out temporal split, test frozen, models trained on earlier records only.
 
 ### End-to-end, 37,398 records
 
+Running `artifacts/models.pkl` — the bundle that serves traffic — over the
+held-out split. Regenerate with `uv run python scripts/run_batch.py`.
+
 | | |
 |---|---|
-| straight-through rate | 79.3% |
-| **precision of auto-posted matches** | **99.2%** (29,426 / 29,649) |
-| grouped records routed to review | 87.3% |
+| straight-through rate | 76.5% |
+| **precision of auto-posted matches** | **99.45%** (28,441 / 28,599) |
+| wrong auto-posts | 158 |
+| grouped records routed to review | 87.0% (3,309 / 3,804) |
+| single-key records wrongly routed | 1,467 |
 | throughput | **795 rec/sec** on a laptop (8-core arm64); **45/sec** on free-tier hosting, which is a fraction of a CPU. Both are the median of three warm runs |
 | **LLM calls on the matching path** | **0** |
 | records unaccounted for | **0** |
 
-Review volume falls from 37,398 records to 7,749 — a **79.3% reduction in what a human must look at.**
+Review volume falls from 37,398 records to 8,799 — a **76.5% reduction in what a human must look at.**
+
+An earlier version of this table said 79.3% and 99.2%. That was
+`sigmoid(margin)`, which the service stopped using when the isotonic
+calibrator shipped, and it is the flattering of the two. The script meant to
+regenerate these figures had been raising `TypeError` before it reached the
+matching loop, so nothing caught the drift — the numbers were correct when
+written and no longer described what ran.
+
+### Against the rules engine that produced these labels
+
+The comparison this README was missing, and the first one anyone evaluating a
+reconciliation tool asks for. BenchRec's labels *are* a Tier-1 bank's
+production system deciding: `matchRule == MANUAL` marks every reconciliation a
+person had to touch, so the incumbent's own auto-resolution rate is computable
+on exactly this population.
+
+| | held-out records |
+|---|---|
+| incumbent rules engine auto-resolved | **81.31%** |
+| this system posted | **76.47%** |
+| | **−4.84 pp** |
+
+**It posts less than the engine it was built to improve on.** Split by what
+that engine already managed, the aggregate turns out to cover two different
+problems:
+
+| population | n | this system posts | of those, correct | wrong |
+|---|---|---|---|---|
+| incumbent auto-resolved it | 30,408 | 90.04% | 27,379 / 27,380 | **1** |
+| **incumbent sent it to a human** — the gap | **6,990** | **17.44%** | 1,062 / 1,219 | **157** |
+
+On the easy population it reproduces the incumbent almost exactly and posts 90%
+of it. On the hard one — the reason this project exists — it resolves one
+record in six and is wrong on one in eight of those. **157 of the 158 wrong
+auto-posts come from that second group.**
+
+The first row is written as a fraction because the rate is 99.9963%, and
+rounding it to 100.00% would hide the one wrong post in it.
+
+Two things that near-perfect first row does not mean. The labels for
+auto-resolved reconciliations are the incumbent's own output and the ranker
+trained on that distribution, so agreeing with it is close to tautological —
+the figure measures reproduction, not correctness. And the incumbent's error
+rate is not measurable here at all, because its decisions define the ground
+truth. What can be said is narrow and worth saying anyway: this posts 4.84 pp
+less than the incumbent, and takes on a population the incumbent automated
+none of.
 
 ### The learning loop
 
@@ -105,6 +157,14 @@ Getting here required discovering that autonomy alone is a gameable metric: feed
 | threshold 0.3 | 42.1% | 97.4% | 0.588 |
 
 Confusion matrix at 0.7: 3,319 grouped records caught, 485 missed, and **1,535 single-key records wrongly sent for review**. Roughly one in three of its alerts is a false alarm — the cost of catching 87% of the ones nobody else automates.
+
+That is the detector measured on its own (`scripts/model_diagnostics.py`). In
+the pipeline it catches 3,309 and wrongly routes 1,467, because `match_one`
+does not let it fire on a record with a lone exact-amount candidate — on that
+subpopulation it is right 12.2% of the time. The end-to-end table above
+reports the pipeline figures; both are stated because they answer different
+questions, and quoting the kinder one for whichever is being asked would be
+the whole problem.
 
 Ranked by confidence instead of thresholded, it looks better, and this is the number an earlier version of this README led with:
 
@@ -248,11 +308,11 @@ Stated plainly, because the alternative is being asked about them.
 
 **1.06% of records are lost at blocking** and cannot be recovered downstream. Widening the window to ±14 days recovers 0.4% of that for double the candidates.
 
-**223 auto-posted matches are wrong.** That is what 99.2% precision leaves. Each closes a real exception and writes a false claim into the ledger.
+**158 auto-posted matches are wrong.** That is what 99.45% precision leaves. Each closes a real exception and writes a false claim into the ledger. **157 of the 158 are records the incumbent rules engine had sent to a human** — the population this is built for is also the only one it gets wrong.
 
-**1,535 single-key records were wrongly sent for review** — 4.1% of the batch doing unnecessary work, the false-positive cost of catching 87.3% of the grouped ones.
+**1,467 single-key records were wrongly sent for review** — 3.9% of the batch doing unnecessary work, the false-positive cost of catching 87.0% of the grouped ones.
 
-**Straight-through is below vendor claims.** HighRadius publishes 95–98% auto-match; this posts 79.3%. Some of the gap is definitional — routing a grouped record to a human counts against us and may not count against them — but the comparison is written the way that does not assume our favour.
+**Straight-through is below the incumbent, and below vendor claims.** The rules engine that produced these labels auto-resolved 81.31% of this same held-out set; this posts 76.47%. HighRadius publishes 95–98% auto-match. Part of the vendor gap is definitional — routing a grouped record to a human counts against us and may not count against them — but that excuse does not apply to the incumbent comparison, where `matchRule == MANUAL` means a person touched it, which is exactly what routing to review means here.
 
 **Throughput is about 1.9× the published commercial figure** — and that is on a laptop. On the free-tier host the live demo runs at 45 rec/sec, roughly 18× slower, because the instance is a fraction of a CPU. Blocking alone does 6,720/sec; the pipeline is still a per-record Python loop. A throughput number without the machine attached is not a number.
 
@@ -283,11 +343,21 @@ distinction is visible rather than assumed. Concurrency is not the issue people
 expect: the container runs a single worker and the log is already
 thread-safe with a lock and a four-thread test.
 
+**And it is not small.** Each decision records the ranked candidate order,
+because without it a correction cannot be attributed to a stage — a key that
+was never offered is indistinguishable from one ranked second. That is a median
+of 22 keys and ~870 bytes per row, against ~60 before, so a full 37,398-record
+batch writes about 56 MB. Fine for a demo and for the offline runs; at real
+volume the ranking belongs in its own table, truncated on a retention policy,
+rather than inline in every decision's evidence.
+
 **The free LLM's prose is worse than the templates it replaces.** The architecture is sound; the output is not yet an improvement. Templates are the default and the model is the optional upgrade — the reverse of what the design assumed.
 
-**The learning loop is an offline experiment, not a live feature.** `scripts/run_learning.py` produces the −71% result above with all its controls, and it is real. But no API path touches it: a reviewer correcting a decision in the deployed demo does not retrain anything. The architecture diagram draws learning as a layer of the running system; today it is a script.
+**Retraining is an offline experiment, not a live feature.** `scripts/run_learning.py` produces the −71% result above with all its controls, and it is real. `POST /api/correct` now records a correction, attributes it to the stage that failed, and retains it as precedent — but it retrains nothing. The architecture diagram draws learning as a layer of the running system; the routing and the recording are live, the model update is still a script.
 
-**The case base is built and tested but wired to nothing.** Twelve tests cover retrieval, near-duplicate collapse, size capping and retirement. Nothing calls it — not even the learning experiment that produced the number above. It is retained rather than deleted because the design for it was requested deliberately, but it is not part of any measured result.
+**The case base is written and never read.** `/api/correct` retains every correction and `/api/cases` reports what it holds, with near-duplicates collapsed into one precedent carrying a tally. But `retrieve()` is called by nothing outside its own tests: no decision consults a precedent, so the base changes no outcome. It is a record of what reviewers have said, not yet an input to anything.
+
+**A correction was attributed to the wrong stage until recently, and permanently.** `learn/router.py` exists to keep four fixes apart — widening the window cannot repair a ranking miss, and retraining the ranker cannot repair a key it never saw. All five values `/api/correct` fed it were wrong, and each failed in the direction that looks like a ranking error: the correct key was added to the candidate set before asking whether the set contained it, so `blocking` was unreachable; the trail held one ranked key, so every ranking correction recorded `position None`; `truly_multiple` was hardcoded `False`, so a reviewer confirming a grouping was told the record maps to a single key; `routed_multiple` and `posted` each compared against a string the log does not contain, so both were always `False`. The log is append-only, so every one of those attributions is still in it. The inputs are now taken from the recorded ranking, a reviewer can name several keys, and where the trail cannot say what was offered the answer is `unattributed` rather than a guess.
 
 ---
 
@@ -322,7 +392,7 @@ the precision it reports is measured against ground truth rather than asserted.
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-uv run pytest                              # 240 tests
+uv run pytest                              # the suite prints its own count
 
 uv run python scripts/measure_blocking.py  # recall/size tradeoff
 uv run python scripts/train_ranker.py      # top-1 vs baselines

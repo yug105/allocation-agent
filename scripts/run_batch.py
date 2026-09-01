@@ -115,7 +115,7 @@ print(f"  {'difference':34} {(res.straight_through_rate-incumbent_auto.mean())*1
 
 # Split by what the incumbent already managed. The aggregate hides that almost
 # every wrong auto-post comes from the population this project exists for.
-print(f"\n{'population':44} {'n':>7} {'posted':>9} {'correct':>9}")
+print(f"\n{'population':44} {'n':>7} {'posted':>9} {'correct':>9} {'wrong':>7}")
 for label, mask in (("incumbent auto-resolved it", incumbent_auto),
                     ("incumbent sent it to a human (the gap)", ~incumbent_auto)):
     ids = [ds.records[i].record_id for i, m in zip(sp.test, mask, strict=True) if m]
@@ -125,8 +125,11 @@ for label, mask in (("incumbent auto-resolved it", incumbent_auto),
              and json.loads(d["chosen_keys"])[:1] == [truth[d["record_id"]][0]]
              for d in posted)
     rate = len(posted) / len(sub) * 100 if sub else 0.0
+    # Counts, not only the rate. 27,379 of 27,380 rounds to 100.00% and is not
+    # 100%; a wrong auto-post that a rounding hides is the one worth seeing.
     prec = ok / len(posted) * 100 if posted else 0.0
-    print(f"  {label:42} {len(sub):7,} {rate:8.2f}% {prec:8.2f}%")
+    print(f"  {label:42} {len(sub):7,} {rate:8.2f}% {prec:8.2f}% {len(posted)-ok:7,}")
+    print(f"  {'':42} {'':7} {len(posted):8,}  {ok:8,}")
 
 print("\nexception taxonomy:")
 for k, v in res.exceptions.most_common():

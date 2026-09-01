@@ -1530,10 +1530,21 @@ def test_health_reports_what_the_models_were_trained_against(client):
 # old; claiming a permanent trail while shipping an ephemeral one is not.
 # --------------------------------------------------------------------------- #
 
-def test_health_says_whether_the_audit_log_survives_a_restart(client):
-    body = client.get("/api/health").json()
+def test_health_says_whether_the_audit_log_survives_a_restart(monkeypatch):
+    """With no AUDIT_DB the log is wherever the artifacts are, which on the free
+    tier is an ephemeral disk — so health must say so rather than let a reader
+    assume the trail is kept.
+
+    This used to read the ambient environment through the shared `client`, and
+    passed only because nothing had set the variable. `conftest.py` now points
+    it at a temp file so the suite stays out of the real log, which made the
+    assumption visible by breaking it. The unset case is the case under test,
+    so the test sets it — the way its sibling below already did.
+    """
+    monkeypatch.delenv("AUDIT_DB", raising=False)
+    body = TestClient(create_app()).get("/api/health").json()
     assert "audit_persistent" in body
-    assert body["audit_persistent"] is False, "no AUDIT_DB set in this environment"
+    assert body["audit_persistent"] is False
 
 
 def test_the_audit_location_is_a_deploy_setting(tmp_path, monkeypatch):

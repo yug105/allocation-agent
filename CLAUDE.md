@@ -125,11 +125,15 @@ test mode and runs the solver on them with the settlement id withheld. The
 transport is injectable (`_rzp_fetch`) so every test runs without a key or a
 network. A live key is refused; the secret is never stored, logged or returned.
 
-**Not on any live path:** `learn/` is an offline experiment run by
-`scripts/run_learning.py` — correcting a decision in the demo retrains nothing.
-`learn/casebase.py` is tested and called by nothing. `pipeline.py` is used only
-by `scripts/run_batch.py` and its test. Do not describe these as product
-features.
+**Partly on a live path, and the line matters.** `/api/correct` calls
+`learn/router.py` to attribute a correction and `learn/casebase.py` to retain
+it, and `/api/cases` reports what is held — so those two are live. What is
+*not*: `casebase.retrieve()` is called by nothing outside its own tests, so no
+decision consults a precedent, and nothing retrains. `learn/simulate.py` and
+the retraining experiment are `scripts/run_learning.py` only. `pipeline.py` is
+used only by `scripts/run_batch.py` and its test. Do not describe retraining or
+precedent-driven matching as product features; `scripts/audit_architecture.py`
+prints the current answer.
 
 ## The rule everything else follows from
 

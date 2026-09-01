@@ -380,3 +380,17 @@ def test_a_single_threaded_caller_still_needs_no_run_id(tmp_path):
     log.record("b1", d, keys=["K"], n_candidates=1, path="ranked")
     log.commit()
     assert len(log.decisions(run_id=run_id)) == 1
+
+
+def test_the_suite_does_not_write_to_the_runtime_audit_log():
+    """The tests used to append to `artifacts/runs.db` — the file the deployed
+    service writes to. It reached 901 MB, and two overlapping runs deadlocked
+    each other on it. conftest.py points AUDIT_DB at a temp file."""
+    import os
+    from pathlib import Path
+
+    from allocation_agent.api import ARTIFACTS
+
+    configured = os.environ.get("AUDIT_DB")
+    assert configured, "AUDIT_DB is unset: an app built here writes to the real log"
+    assert Path(configured).resolve() != (ARTIFACTS / "runs.db").resolve()
