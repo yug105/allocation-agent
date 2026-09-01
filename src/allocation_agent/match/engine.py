@@ -162,7 +162,14 @@ def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
             confidence = float(1.0 / (1.0 + np.exp(-margin)))
             source = "uncalibrated_sigmoid"
         path = "ranked"
-        evidence = {"margin": round(margin, 4), "confidence_from": source}
+        # The order the ranker actually produced, not only its winner. A
+        # correction arrives later with the right key and has to be attributed
+        # to a stage: without this list the trail cannot say whether that key
+        # was ranked below another or never reached the ranker at all, and
+        # `/api/correct` was guessing "ranked" for both. `n_candidates` records
+        # how many were scored, so a reader can tell this list is complete.
+        evidence = {"margin": round(margin, 4), "confidence_from": source,
+                    "ranked_keys": [usable[int(i)] for i in order]}
         # When a lone exact amount kept the grouping check from firing, the
         # trail has to say so. Without this the record is indistinguishable
         # from an ordinary match, and a reviewer cannot see that a
@@ -186,10 +193,14 @@ def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
         confidence = DIRECT_CONFIDENCE
         source = "benchrec_heldout" if calibrated_for_this_data else "benchrec_heldout_unvalidated"
         path = "direct"
-        evidence = {"exact_amount": True, "confidence_from": source}
+        evidence = {"exact_amount": True, "confidence_from": source,
+                    "ranked_keys": [chosen]}
     else:
         # One candidate, and its amount is not this figure. Nothing supports it.
-        confidence, path, evidence = None, "ranked", None
+        # It was still the only thing considered, and a correction naming a
+        # different key needs to see that rather than an empty trail.
+        confidence, path = None, "ranked"
+        evidence = {"ranked_keys": [chosen]}
 
     d = decide(confidence=confidence, amount_minor=rec.amount_minor, config=gate)
 
