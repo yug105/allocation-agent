@@ -108,6 +108,33 @@ Without a ranker every record is queued. This used to fall back to a rules
 
     models = Models(ranker, multiplicity, prior, calibrator, calibrator_kind)
 
+    # The API path commits and closes its run; this one did neither, so a batch
+    # wrote every decision into an open transaction that the process discarded
+    # on exit, and left `runs.status` at 'running' for a batch that had
+    # finished. Three such rows were sitting in `data/audit.db`.
+    try:
+        _reconcile_each(records, result, models=models, key_index=key_index,
+                        key_stats=key_stats, audit=audit, run_id=run_id,
+                        gcfg=gcfg, bcfg=bcfg, ranker=ranker,
+                        mult_threshold=mult_threshold,
+                        calibrated_for_this_data=calibrated_for_this_data)
+    except BaseException as exc:
+        # Whatever it wrote is kept and the row says why -- the same contract
+        # `/api/run` has. A partial trail is evidence; a silent one is not.
+        audit.commit()
+        audit.fail_run(run_id, f"{type(exc).__name__}: {exc}")
+        raise
+    audit.commit()
+    audit.finish_run(run_id)
+
+    result.seconds = time.perf_counter() - started
+    return result
+
+
+def _reconcile_each(records, result, *, models, key_index, key_stats, audit,
+                    run_id, gcfg, bcfg, ranker, mult_threshold,
+                    calibrated_for_this_data) -> None:
+    """The per-record loop, so the caller above owns commit and run status."""
     for record in records:
         if ranker is None:
             d = decide(confidence=None, amount_minor=record.amount_minor, config=gcfg)
@@ -153,6 +180,3 @@ Without a ranker every record is queued. This used to fall back to a rules
         else:
             result.queued += 1
             result.exceptions["below_threshold"] += 1
-
-    result.seconds = time.perf_counter() - started
-    return result

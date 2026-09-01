@@ -43,7 +43,7 @@ a test, not asserted in a comment.
 | A model failure cannot post anything | Ranker, detector, calibrator and narrator were each made to fail on purpose. All four degrade to review; the batch continues |
 | Explanation cannot change a decision | Narration runs after the gate. A narrator that raises loses its sentence, not the decision |
 | No invented figure reaches a reviewer | Every number in generated text must equal one the record carries, compared by value. A lying backend falls back to the template |
-| Every decision is recorded, and a broken run says so | Append-only enforced by database triggers; a run that stops halfway is marked `failed` rather than left looking finished |
+| Every decision is recorded, and a broken run says so | Append-only enforced by database triggers; a run that stops halfway is marked `failed` rather than left looking finished, and a run that ends is committed and marked `completed` — the batch path did neither until a test read the log back through a second connection |
 | Money never drifts | Integer minor units throughout. Three decimals are refused, not rounded; a semicolon file's decimal comma is read as a decimal comma |
 
 Nine failure modes were attacked deliberately. **One real defect surfaced** —
@@ -350,6 +350,14 @@ of 22 keys and ~870 bytes per row, against ~60 before, so a full 37,398-record
 batch writes about 56 MB. Fine for a demo and for the offline runs; at real
 volume the ranking belongs in its own table, truncated on a retention policy,
 rather than inline in every decision's evidence.
+
+**The offline batch was writing none of it.** `pipeline.run_batch` never called
+`commit()` or `finish_run()` — only the API path did — so a 37,398-record run
+built its whole trail inside an open transaction that the process threw away on
+exit, and left its `runs` row at `status='running'` for a batch that had
+finished. The script printed *audit rows written: 37,398* from the same
+uncommitted connection, so it read as working. Three orphaned `running` rows
+and no decisions in `data/audit.db` is what actually surfaced it.
 
 **The free LLM's prose is worse than the templates it replaces.** The architecture is sound; the output is not yet an improvement. Templates are the default and the model is the optional upgrade — the reverse of what the design assumed.
 

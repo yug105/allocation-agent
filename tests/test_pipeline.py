@@ -104,14 +104,36 @@ def test_rerun_is_deterministic(audit, tmp_path):
 # It now calls match_one, so there is one implementation to fix.
 # --------------------------------------------------------------------------- #
 
-def test_the_batch_runner_uses_the_shared_engine():
+def test_the_batch_runner_uses_the_shared_engine(audit, monkeypatch):
+    """One matching path: this file used to carry its own copy of it.
+
+    This grepped `run_batch`'s source for `match_one(` and broke the moment the
+    loop moved into a helper — while still calling the shared engine on every
+    record. Calling it is the property; where the call is written is not.
+    """
     import inspect
 
     from allocation_agent import pipeline
-    src = inspect.getsource(pipeline.run_batch)
-    assert "match_one(" in src
+
+    seen = []
+    real = pipeline.match_one
+    monkeypatch.setattr(pipeline, "match_one",
+                        lambda rec, **kw: seen.append(rec) or real(rec, **kw))
+
+    idx, stats, records = setup()
+    pipeline.run_batch(records, idx, stats, audit, run_config=cfg(),
+                       ranker=_ScoresInOrder())
+    assert len(seen) == len(records), "a record bypassed the shared engine"
+
+    src = inspect.getsource(pipeline)
     assert "featurise(" not in src, "still scoring locally"
     assert "np.argsort" not in src, "still ranking locally"
+
+
+class _ScoresInOrder:
+    def score(self, X):
+        import numpy as np
+        return np.linspace(1.0, 0.0, len(X))
 
 
 def test_without_a_ranker_everything_goes_to_a_person(tmp_path):
@@ -227,3 +249,22 @@ def test_a_result_can_be_printed(audit):
     text = str(r)
     assert f"{len(records):,} records" in text
     assert "posted" in text
+
+
+def test_a_finished_batch_is_committed_and_marked_finished(tmp_path):
+    """The API path calls commit() and finish_run(); this one called neither.
+
+    So a batch wrote 37,398 decisions that were discarded when the process
+    exited, and left its run row at status='running' forever — the exact
+    failure the audit design claims to prevent, inverted: a run that finished
+    looks like one still going, and its trail is gone.
+    """
+    idx, stats, records = setup()
+    audit = AuditLog(tmp_path / "b.db")
+    r = run_batch(records, idx, stats, audit, run_config=cfg())
+
+    # A second connection sees only what was committed.
+    reread = AuditLog(tmp_path / "b.db")
+    assert len(reread.decisions(r.run_id)) == len(records), \
+        "the decisions were never committed"
+    assert reread.get_run(r.run_id)["status"] == "completed"
