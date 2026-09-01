@@ -28,7 +28,7 @@ from typing import Any
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from allocation_agent.adapters.csv_upload import (
     UploadError,
@@ -41,7 +41,7 @@ from allocation_agent.adapters.razorpay import (
     group_into_settlements,
 )
 from allocation_agent.adapters.razorpay import _default_fetch as _rzp_fetch
-from allocation_agent.decide.gate import GateConfig, decide
+from allocation_agent.decide.gate import GateConfig, Outcome, decide
 from allocation_agent.decide.narrate import Narrator
 from allocation_agent.learn.casebase import Case, CaseBase
 from allocation_agent.learn.router import diagnose
@@ -130,9 +130,27 @@ class CorrectionRequest(BaseModel):
 
     run_id: str
     record_id: str
-    correct_key: str
+    # A reviewer who says this credit covers three invoices is telling us the
+    # record is genuinely grouped, and that is the only place that fact can
+    # come from -- the machine's own guess is what is being corrected. It was
+    # hardcoded `truly_multiple = False`, so a reviewer confirming a grouping
+    # was told the opposite of what they had just said.
+    correct_key: str = ""
+    correct_keys: list[str] = Field(default_factory=list)
     reviewer: str = ""
     reviewer_notes: str = ""
+
+    @model_validator(mode="after")
+    def _one_form_or_the_other(self) -> CorrectionRequest:
+        if not self.keys:
+            raise ValueError("name the correct key, or keys, for this record")
+        return self
+
+    @property
+    def keys(self) -> list[str]:
+        """What the reviewer named, however they named it."""
+        named = self.correct_keys or ([self.correct_key] if self.correct_key else [])
+        return [k for k in dict.fromkeys(named) if k]
 
 
 class ConnectRequest(BaseModel):
@@ -753,41 +771,74 @@ def create_app() -> FastAPI:
 
     @app.post("/api/correct")
     def correct_record(req: CorrectionRequest) -> dict:
-        prior = audit.last_decision(req.record_id, run_id=req.run_id)
+        # The machine's decision, not the last thing written about the record.
+        # A correction is appended like any other row, so without this a second
+        # correction is diagnosed against the first one's note.
+        prior = audit.last_decision(req.record_id, run_id=req.run_id,
+                                    machine_only=True)
         if not prior:
             raise HTTPException(404, "Original decision not found")
 
-        chosen_keys = json.loads(prior["chosen_keys"])
         outcome = prior["outcome"]
-        path = prior["path"]
-        
-        posted = (outcome == "posted")
-        routed_multiple = (path == "suspected_grouped")
-        truly_multiple = False
-        
-        candidates = set(chosen_keys)
-        if prior["n_candidates"] > 0:
-            candidates.add(req.correct_key)
-            
+
+        try:
+            evidence_dict = json.loads(prior["evidence"] or "{}")
+        except (ValueError, TypeError):
+            evidence_dict = {}
+
+        # Both of these compared against strings the log does not contain.
+        #
+        # The `outcome` column holds the *gate's* verdict -- Outcome.POST is
+        # "post", not "posted" -- so `posted` was always False and a record
+        # that auto-posted could be reported as one the gate had refused.
+        #
+        # `suspected_grouped` is the engine's outcome and never reaches the
+        # log at all; the row that carries it has `path == "multiplicity"`. So
+        # `routed_multiple` was always False too, and the grouped branch could
+        # only fire in the direction that says the grouping was *missed*.
+        posted = (outcome == Outcome.POST.value)
+        routed_multiple = (prior["path"] == "multiplicity")
+        # The reviewer named the keys; naming several is what "this record is
+        # genuinely grouped" looks like. This was hardcoded False, so a
+        # reviewer confirming a grouping was told the record maps to one key.
+        truly_multiple = len(req.keys) > 1
+
+        # What the ranker was actually given, in the order it produced. The set
+        # membership decides blocking and the order decides position -- both
+        # were previously guessed. `candidates.add(req.correct_key)` used to put
+        # the answer into the set before testing whether it was in the set, so
+        # no correction could ever be attributed to blocking.
+        ranked_keys = evidence_dict.get("ranked_keys") or []
+        if ranked_keys:
+            candidates = set(ranked_keys)
+        elif prior["n_candidates"] == 0:
+            # Blocking returned nothing. That is a known empty set, not an
+            # unknown one, and any key the reviewer names was never offered.
+            candidates = set()
+        else:
+            # Routed away before ranking, or written by an older build. The
+            # trail cannot say what was offered, and diagnose() must not guess.
+            candidates = None
+
         diag = diagnose(
-            correct_keys=[req.correct_key],
+            correct_keys=req.keys,
             candidates=candidates,
-            ranked_keys=chosen_keys,
+            ranked_keys=ranked_keys,
             posted=posted,
             routed_multiple=routed_multiple,
-            truly_multiple=truly_multiple
+            truly_multiple=truly_multiple,
         )
-        
+
         audit.record_correction(
             record_id=req.record_id,
             run_id=req.run_id,
-            correct_key=req.correct_key,
+            correct_key=", ".join(req.keys),
             locus=diag.locus.value,
             detail=diag.detail,
             reviewer=req.reviewer or "reviewer",
             reviewer_notes=req.reviewer_notes,
         )
-        
+
         case_id = f"{req.run_id}:{req.record_id}"
         # A situation vector needs more than one dimension. This was
         # `[margin]`, and the cosine of two one-element positive vectors is
@@ -795,13 +846,6 @@ def create_app() -> FastAPI:
         # duplicate and the base could hold one case per locus, no matter how
         # different the failures were. These five are what the record actually
         # carries, on scales that make two unlike failures point apart.
-        evidence_dict: dict[str, Any] = {}
-        if prior["evidence"]:
-            try:
-                evidence_dict = json.loads(prior["evidence"])
-            except (ValueError, TypeError):
-                evidence_dict = {}
-
         amount = abs(prior["amount_minor"] or 0) / 100
         situation = np.array([
             math.log10(max(amount, 1.0)),          # size, on a scale that compresses
@@ -815,15 +859,19 @@ def create_app() -> FastAPI:
             case_id=case_id,
             situation=situation,
             locus=diag.locus.value,
-            resolution=[req.correct_key]
+            resolution=req.keys,
         )
         case_base.retain(case, human_certain=True)
-        
+
         return {
             "record_id": req.record_id,
             "run_id": req.run_id,
             "locus": diag.locus.value,
-            "detail": diag.detail
+            "detail": diag.detail,
+            "correct_keys": req.keys,
+            # What the attribution was made from, so a reader can see whether
+            # the trail could support it rather than taking the locus on trust.
+            "n_ranked": len(ranked_keys),
         }
 
     @app.get("/api/cases")

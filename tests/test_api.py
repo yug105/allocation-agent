@@ -1949,3 +1949,119 @@ def test_correcting_a_record_that_was_never_decided_is_refused(client):
         "run_id": run_id, "record_id": "no-such-record",
         "correct_key": "K", "reviewer": "yug"})
     assert r.status_code == 404
+
+
+def _a_grouped_record(client):
+    body = client.post("/api/run", json={"limit": 300}).json()
+    ex = next(e for e in body["exceptions"] if e["reason"] == "suspected_grouped")
+    return body["run_id"], ex["record_id"]
+
+
+def test_a_key_blocking_never_offered_is_a_blocking_failure(client):
+    """`router.py` exists to keep these apart: widening the window cannot fix a
+    ranking miss, and retraining the ranker cannot fix a key it never saw.
+
+    The endpoint was adding `correct_key` to the candidate set before asking,
+    so the "was it ever a candidate?" test compared the answer against itself
+    and no correction could ever be attributed to blocking.
+    """
+    run_id, record_id = _a_queued_record(client)
+    body = client.post("/api/correct", json={
+        "run_id": run_id, "record_id": record_id,
+        "correct_key": "NOT-IN-ANY-LEDGER", "reviewer": "yug"}).json()
+    assert body["locus"] == "blocking", (
+        f"a key that was never blocked was attributed to {body['locus']!r}: "
+        f"{body['detail']}")
+
+
+def test_a_reviewer_naming_several_keys_is_not_contradicted(client):
+    """`truly_multiple` was hardcoded False, so a reviewer confirming a record
+    genuinely spans several keys was told the opposite of what they said."""
+    run_id, record_id = _a_grouped_record(client)
+    r = client.post("/api/correct", json={
+        "run_id": run_id, "record_id": record_id,
+        "correct_keys": ["KEY-A", "KEY-B", "KEY-C"], "reviewer": "yug"})
+    assert r.status_code == 200, "a reviewer cannot name more than one key"
+    body = r.json()
+    assert "maps to a single key" not in body["detail"], (
+        "the reviewer named three keys and was told the record maps to one")
+    # Routed to a person as grouped, and grouped is what it was. Nothing was
+    # matched and nothing needed to be -- declining was the right call.
+    assert body["locus"] == "none", (
+        f"a correct grouping call was attributed to {body['locus']!r}: "
+        f"{body['detail']}")
+
+
+def test_a_ranking_failure_names_the_position_it_ranked_at(client):
+    """The trail recorded only the winner, so the correct key was never in the
+    list `diagnose()` searched for a position and every ranking correction
+    wrote 'position None' into an append-only log."""
+    run_id, record_id = _a_queued_record(client)
+    trail = client.get(f"/api/run/{run_id}/audit").json()
+    row = next(d for d in trail["decisions"] if d["record_id"] == record_id)
+    evidence = json.loads(row["evidence"] or "{}")
+    ranked = evidence.get("ranked_keys")
+    assert ranked and len(ranked) > 1, \
+        "the trail does not record what was ranked, so no position can be named"
+
+    body = client.post("/api/correct", json={
+        "run_id": run_id, "record_id": record_id,
+        "correct_key": ranked[1], "reviewer": "yug"}).json()
+    assert body["locus"] == "ranking"
+    assert "position None" not in body["detail"], body["detail"]
+    assert "position 2" in body["detail"], body["detail"]
+
+
+def test_a_missed_grouping_is_attributed_to_multiplicity(client):
+    """`routed_multiple` compared `path` against an *outcome* name. The engine
+    records `path='multiplicity'` and `outcome='suspected_grouped'`, so the
+    comparison was always False and the grouped branch ran backwards."""
+    run_id, record_id = _a_queued_record(client)
+    body = client.post("/api/correct", json={
+        "run_id": run_id, "record_id": record_id,
+        "correct_keys": ["KEY-A", "KEY-B"], "reviewer": "yug"}).json()
+    assert body["locus"] == "multiplicity", (
+        f"a single match the reviewer says spans two keys was attributed to "
+        f"{body['locus']!r}: {body['detail']}")
+    assert "not detected as grouped" in body["detail"]
+
+
+def test_a_second_correction_is_attributed_against_the_machine(client):
+    """`last_decision` returns the most recent row, which after one correction
+    is the correction itself — so a reviewer revising their answer was diagnosed
+    against another reviewer's note rather than the decision being corrected."""
+    run_id, record_id = _a_queued_record(client)
+    trail = client.get(f"/api/run/{run_id}/audit").json()
+    row = next(d for d in trail["decisions"] if d["record_id"] == record_id)
+    ranked = json.loads(row["evidence"])["ranked_keys"]
+
+    first = client.post("/api/correct", json={
+        "run_id": run_id, "record_id": record_id,
+        "correct_key": "A-FIRST-GUESS", "reviewer": "yug"}).json()
+    second = client.post("/api/correct", json={
+        "run_id": run_id, "record_id": record_id,
+        "correct_key": ranked[1], "reviewer": "yug"}).json()
+
+    assert first["locus"] == "blocking"
+    assert second["locus"] == "ranking", (
+        f"the revision was diagnosed against the earlier correction: "
+        f"{second['locus']!r} — {second['detail']}")
+    assert "position 2" in second["detail"], second["detail"]
+
+
+def test_confirming_an_auto_posted_key_is_not_called_a_threshold_failure(client):
+    """`posted` compared the gate's outcome against "posted"; the gate writes
+    "post". Always False, so a record that auto-posted could be reported as one
+    the gate had refused — the opposite of what happened."""
+    run_id, _ = _a_queued_record(client)
+    trail = client.get(f"/api/run/{run_id}/audit").json()
+    row = next(d for d in trail["decisions"] if d["outcome"] == "post")
+    chosen = json.loads(row["chosen_keys"])[0]
+
+    body = client.post("/api/correct", json={
+        "run_id": run_id, "record_id": row["record_id"],
+        "correct_key": chosen, "reviewer": "yug"}).json()
+    assert body["locus"] != "threshold", (
+        f"an auto-posted record was reported as refused by the gate: "
+        f"{body['detail']}")
+    assert body["locus"] == "none", body["detail"]
