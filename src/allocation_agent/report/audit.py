@@ -301,17 +301,26 @@ class AuditLog:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def last_decision(self, record_id: str, *, run_id: str) -> dict[str, Any] | None:
+    def last_decision(self, record_id: str, *, run_id: str,
+                      machine_only: bool = False) -> dict[str, Any] | None:
         """The most recent decision recorded for one record in one run.
 
         Exists so callers do not reach through `_conn` and `_lock` to read the
         log. Those are private because every write goes through the lock; a
         caller that borrows them is one refactor away from writing without it.
+
+        `machine_only` skips correction rows. A correction is appended like any
+        other decision, so the most recent row for a corrected record is the
+        correction — and a caller asking "what did the machine decide?" got a
+        reviewer's note back, with no ranking on it and no candidate count. Any
+        second correction was then diagnosed against the first.
         """
+        sql = "SELECT * FROM decisions WHERE record_id = ? AND run_id = ? "
+        if machine_only:
+            sql += "AND path != 'correction' "
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM decisions WHERE record_id = ? AND run_id = ? "
-                "ORDER BY seq DESC LIMIT 1", (record_id, run_id)).fetchone()
+                sql + "ORDER BY seq DESC LIMIT 1", (record_id, run_id)).fetchone()
         return dict(row) if row else None
 
     def summary(self, run_id: str | None = None) -> dict[str, int]:
