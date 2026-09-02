@@ -152,6 +152,14 @@ def _resolve_group(rec: BankRecord, usable: list[str], key_stats,
                       "not say which. Sent for review.")
 
     if result.status is SolverStatus.TOO_LARGE:
+        # Two different limits share this status, and they are not the same
+        # news. Printing the pool sentence for an oversized amount tells a
+        # reader there are too many candidate entries when there are three --
+        # a false statement about their own file, which is worse than silence.
+        if rec.amount_minor > config.max_target_minor:
+            return None, ("This credit is larger than the solver will search "
+                          "over, so which entries it covers is left to a "
+                          "person.")
         return None, ("There are more candidate entries here than the solver "
                       "will search over, so no split is claimed. "
                       "Sent for review.")

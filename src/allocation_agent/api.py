@@ -100,7 +100,29 @@ BLOCKING = BlockingConfig(date_slack_days=7)
 # are blocked candidates, not a settlement's pool -- a few dozen at most -- and
 # a wider pool would admit more coincidental sums than it recovers real ones.
 # `max_subset_size` stays at the measured 3.
-UPLOAD_SOLVER = SolverConfig(tolerance_minor=0, max_candidates=64)
+#
+# **`max_target_minor` is a memory bound, not a business rule.** The DP table is
+# `target_minor` bits wide, so on this path the amount column of an uploaded
+# CSV sets an allocation size. The library default of 5e9 is right for a caller
+# that owns its own amounts -- /api/settlements reads demo data, /api/connect
+# reads real settled money -- and is a denial of service for one that reads
+# them from a file a stranger uploaded. Measured through POST /api/reconcile,
+# one bank row, peak RSS:
+#
+#     1,000.00 -> 270 MB (baseline: the loaded models)   10,000,000.00 -> 517 MB
+# 1,000,000.00 -> 295 MB                                 40,000,000.00 -> 953 MB
+#
+# The free tier has 512 MB. A credit above the cap is still reconciled and
+# still routed to a person; only the *split* is declined, which is the cheap
+# half to give up.
+UPLOAD_SOLVER = SolverConfig(tolerance_minor=0, max_candidates=64,
+                             max_target_minor=100_000_000)
+
+# The per-record cap bounds one allocation. It does nothing about a file of
+# 20,000 grouped rows each paying it, so the work per request is bounded too.
+# Records past the line keep their grouped routing and lose only the split;
+# the response reports how many, rather than quietly resolving fewer.
+MAX_GROUPS_RESOLVED = 200
 
 
 # An aging report needs a book that spans time. Measured on the held-out set:
@@ -962,6 +984,7 @@ def create_app() -> FastAPI:
                    "suspected_grouped": 0, "unscorable": 0, "model_error": 0}
         unresolved: list[tuple[int, float]] = []
         resolved: list[str] = []
+        over_budget: list[str] = []
         llm_before = narrator.calls
         results = []
         started = time.perf_counter()
@@ -982,11 +1005,14 @@ def create_app() -> FastAPI:
                 # calibrated=False: the calibrator and DIRECT_CONFIDENCE were both
                 # measured on BenchRec. Sharing a code path with this file does not
                 # transfer those measurements to it.
+                # Read the budget per record: the module constant is what the
+                # test patches, and capturing it once would ignore that.
+                within_budget = len(resolved) < MAX_GROUPS_RESOLVED
                 r = _match_or_degrade(rec, index=index, key_stats=key_stats,
                                       models=state.models, gate=gate,
                                       mult_threshold=MULT_THRESHOLD, blocking=BLOCKING,
                                       narrator=narrator, calibrated=False,
-                                      group_solver=UPLOAD_SOLVER)
+                                      group_solver=UPLOAD_SOLVER if within_budget else None)
                 audit.record(rec.record_id, r["decision"], keys=r["keys"],
                              n_candidates=r["n_candidates"], path=r["path"],
                              evidence=r["evidence"], run_id=run_id)
@@ -996,6 +1022,8 @@ def create_app() -> FastAPI:
                 proposal = r.get("proposal")
                 if proposal:
                     resolved.append(rec.record_id)
+                elif r["outcome"] == "suspected_grouped" and not within_budget:
+                    over_budget.append(rec.record_id)
                 results.append({
                     "record_id": rec.record_id,
                     "account": rec.account,
@@ -1044,6 +1072,10 @@ def create_app() -> FastAPI:
             # call and any figure here would be invented.
             "groups_resolved": len(resolved),
             "groups_found": summary["suspected_grouped"],
+            # Grouped records the per-request budget declined to work on. They
+            # are exceptions either way; this says the split was skipped for
+            # cost rather than because the amounts did not resolve.
+            "groups_over_budget": len(over_budget),
             # Every confidence on this response was derived from measurements
             # taken on BenchRec. Sharing a code path does not transfer them.
             "confidence_validated_for_this_data": False,

@@ -9,7 +9,7 @@ Built for the **Razorpay Buildathon, Track 04 — AI Finance Controller**.
 - **The Hard Problem:** Captures 87% of many-to-one grouped settlements (the critical gap that incumbent rules-engines completely fail to automate).
 - **Agentic Learning Loop:** `/api/correct` is live: it attributes a reviewer's correction to the stage that caused it — blocking, multiplicity, ranking or threshold — because widening blocking cannot fix a ranking miss, and retains the case. The **71% cut in wrong auto-posts** is the offline retraining experiment in `scripts/run_learning.py`, run against its own controls; the live endpoint feeds that loop rather than closing it.
 - **Real AI Engineering:** Zero LLMs on the critical matching path — a LightGBM LambdaRank ranker over 12 features, scored in under a millisecond, with an isotonic calibrator turning its margin into a confidence that means something. LLMs are reserved for column mapping the regex misses, and for writing the explanation after the decision is made.
-- **Production Grade:** 509 passing tests, an append-only audit trail enforced by database triggers rather than convention, and every model failure degrading to human review instead of a 500.
+- **Production Grade:** 513 passing tests, an append-only audit trail enforced by database triggers rather than convention, and every model failure degrading to human review instead of a 500.
 
 ---
 

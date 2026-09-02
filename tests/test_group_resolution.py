@@ -287,3 +287,98 @@ def test_the_benchmark_run_is_unchanged_by_this(client):
     assert grouped, "no grouped records in the sample; the test proves nothing"
     assert all("proposal" not in e for e in grouped)
     assert "groups_resolved" not in body
+
+
+# --------------------------------------------------------------------------- #
+# what wiring the solver to an upload cost, and what bounds it
+#
+# Before this feature `target_minor` was never attacker-controlled: the solver
+# was reached only from /api/settlements (server-owned demo data) and
+# /api/connect (real settled amounts). An uploaded CSV made it a free
+# parameter, and the DP table is `target` bits wide -- so the amount column
+# became a memory dial. Measured through POST /api/reconcile with one bank row:
+#
+#     amount            peak RSS
+#          1,000.00        270 MB   (baseline: the loaded models)
+#      1,000,000.00        295 MB
+#     10,000,000.00        517 MB
+#     40,000,000.00        953 MB
+#
+# The deployed free tier has 512 MB. One row was enough.
+# --------------------------------------------------------------------------- #
+
+def test_the_upload_solver_caps_the_target_far_below_the_solver_default():
+    """The DP table is `target_minor` bits wide, so the cap *is* the memory
+    bound. The library default of 5e9 is fine for a caller that owns its own
+    amounts and is a denial of service for one that takes them from a file."""
+    from allocation_agent.api import UPLOAD_SOLVER
+
+    assert UPLOAD_SOLVER.max_target_minor <= 100_000_000, (
+        "an uploaded amount can allocate a table this many bits wide")
+    assert UPLOAD_SOLVER.max_target_minor < SolverConfig().max_target_minor
+
+
+def test_an_enormous_uploaded_amount_still_reconciles(client):
+    """Refusing to resolve is not refusing to reconcile: the record keeps its
+    grouped routing and reaches a person.
+
+    This one passed before the cap existed, so it is **not** the guard against
+    the exhaustion -- it would have watched 683 MB be allocated and called it
+    a pass. The guards are the two either side of it: the cap itself, and the
+    message that only appears once the cap is what stopped the search.
+    """
+    body = _upload(
+        client,
+        bank="date,description,amount,account\n2026-03-05,X,40000000.00,ACC-9\n",
+        ledger=("date,reference,amount,account\n"
+                "2026-03-05,INV-1,10.00,ACC-9\n"
+                "2026-03-05,INV-2,20.00,ACC-9\n"
+                "2026-03-04,INV-3,30.00,ACC-9\n"),
+    )
+    row = body["results"][0]
+    assert row["outcome"] == "suspected_grouped"
+    assert row["proposal"] is None
+    assert body["groups_resolved"] == 0
+
+
+def test_an_oversized_amount_says_so_rather_than_blaming_the_pool(client):
+    """Both causes of TOO_LARGE used to print the pool-size sentence. A reader
+    told there are too many candidate entries, when there are three, has been
+    told something false about their own file."""
+    body = _upload(
+        client,
+        bank="date,description,amount,account\n2026-03-05,X,40000000.00,ACC-9\n",
+        ledger=("date,reference,amount,account\n"
+                "2026-03-05,INV-1,10.00,ACC-9\n"
+                "2026-03-05,INV-2,20.00,ACC-9\n"
+                "2026-03-04,INV-3,30.00,ACC-9\n"),
+    )
+    explanation = body["results"][0]["explanation"]
+    assert "larger than" in explanation
+    assert "candidate entries" not in explanation, (
+        "blamed the pool for a limit the amount tripped")
+
+
+def test_only_a_bounded_number_of_groups_are_resolved_per_request(client, monkeypatch):
+    """The cap on one record bounds memory; it does nothing about a file of
+    20,000 grouped rows each paying the cost. The work per request is bounded
+    too, and the records over the line are still routed, just not resolved."""
+    import allocation_agent.api as api_mod
+    monkeypatch.setattr(api_mod, "MAX_GROUPS_RESOLVED", 2)
+
+    bank = "date,description,amount,account\n"
+    ledger = "date,reference,amount,account\n"
+    for i in range(5):
+        acct = f"ACC-{i}"
+        bank += f"2026-03-05,X{i},20000.00,{acct}\n"
+        ledger += (f"2026-03-05,INV-{i}A,12000.00,{acct}\n"
+                   f"2026-03-05,INV-{i}B,8000.00,{acct}\n"
+                   f"2026-03-04,INV-{i}C,975.25,{acct}\n")
+
+    body = _upload(client, bank=bank, ledger=ledger)
+    assert body["groups_found"] == 5, "the fixture stopped producing grouped records"
+    assert body["groups_resolved"] == 2
+    assert body["groups_over_budget"] == 3
+    # Every one is still an exception a person will see.
+    assert sum(1 for r in body["results"]
+               if r["outcome"] == "suspected_grouped") == 5

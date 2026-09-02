@@ -102,6 +102,15 @@ raises is recorded in `evidence["resolution_failed"]` and swallowed, for the
 same reason narration's failure is: an explanation must not take a decision
 down with it.
 
+**On the upload path the amount column is attacker-controlled, and the DP
+table is `target_minor` bits wide.** So `UPLOAD_SOLVER` caps
+`max_target_minor` at 1e8 rather than the library's 5e9: one bank row of
+40,000,000.00 took peak RSS from 270 MB to 953 MB on a 512 MB instance before
+the cap, and 6 ms flat after it. `MAX_GROUPS_RESOLVED` bounds the same cost
+across a request, since the per-record cap does nothing about 20,000 grouped
+rows each paying it. Both decline only the *split* — the record is still
+reconciled and still routed to a person.
+
 Its pool is one entry per `(key, amount)`. Two ledger rows sharing a key *and*
 an amount collapse, because `KeyStats.amounts` is a set — so a credit covering
 two identical invoices under one reference reports no answer rather than a
