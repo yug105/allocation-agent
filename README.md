@@ -7,9 +7,9 @@ Built for the **Razorpay Buildathon, Track 04 — AI Finance Controller**.
 ### 🏆 TL;DR for Judges
 - **The Impact:** Automates 76.5% of reconciliation volume with **99.45% precision**, reducing manual review time by 3/4.
 - **The Hard Problem:** Captures 87% of many-to-one grouped settlements (the critical gap that incumbent rules-engines completely fail to automate).
-- **Agentic Learning Loop:** Features a human-in-the-loop correction endpoint (`/api/correct`) that diagnoses failures (Blocking, Ranking, Threshold), saves 5D situation vectors to a Case Base, and reduces wrong auto-posts by **71%**.
-- **Real AI Engineering:** Zero LLMs on the critical matching path (sub-millisecond XGBoost ranking instead). LLMs are strictly reserved for column-mapping fallbacks and human-readable exception narration.
-- **Production Grade:** 250+ passing tests, append-only SQLite audit trails, strict transaction boundaries, and graceful degradation when APIs fail.
+- **Agentic Learning Loop:** `/api/correct` is live: it attributes a reviewer's correction to the stage that caused it — blocking, multiplicity, ranking or threshold — because widening blocking cannot fix a ranking miss, and retains the case. The **71% cut in wrong auto-posts** is the offline retraining experiment in `scripts/run_learning.py`, run against its own controls; the live endpoint feeds that loop rather than closing it.
+- **Real AI Engineering:** Zero LLMs on the critical matching path — a LightGBM LambdaRank ranker over 12 features, scored in under a millisecond, with an isotonic calibrator turning its margin into a confidence that means something. LLMs are reserved for column mapping the regex misses, and for writing the explanation after the decision is made.
+- **Production Grade:** 494 passing tests, an append-only audit trail enforced by database triggers rather than convention, and every model failure degrading to human review instead of a 500.
 
 ---
 
@@ -207,7 +207,7 @@ sequenceDiagram
     Router-->>API: Failure Locus & Detail
     API->>DB: Append correction to Audit Log
     API->>DB: Retain new Case with 5D Situation Vector
-    Note over DB: System avoids repeating this exact mistake
+    Note over DB: Retained for retraining — no live decision reads it back yet
 ```
 
 Cold start on 3,000 records, then learning from what a reviewer says. Ten batches of 4,000, all controls run.

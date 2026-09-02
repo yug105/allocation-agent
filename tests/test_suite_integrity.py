@@ -100,3 +100,48 @@ def test_the_calibration_figures_quoted_in_the_readme_are_current():
     # Both must also appear in the section that produced them, or the headline
     # figure has drifted from its own evidence.
     assert readme.count("74.8%") >= 2, "the guard table cites a figure the results no longer show"
+
+
+def test_the_readme_names_the_model_it_actually_ships():
+    """The judge-facing summary said "XGBoost ranking".
+
+    Nothing in this repo has ever imported xgboost — the ranker is a LightGBM
+    LambdaRank, and `models.pkl` unpickles as one. A reader who checked would
+    have found the first technical claim in the document wrong, which is worse
+    than the claim being absent. This pins the name to the import that proves
+    it rather than to the prose.
+    """
+    readme = (ROOT / "README.md").read_text()
+    ranker = (ROOT / "src/allocation_agent/match/ranker.py").read_text()
+
+    assert "LGBMRanker" in ranker, "the ranker changed; the README must change too"
+    assert "LightGBM" in readme, "the README no longer names the model it ships"
+    assert "XGBoost" not in readme and "xgboost" not in readme, (
+        "the README names a library this project does not use")
+
+
+def test_the_readme_test_count_is_not_an_overclaim():
+    """It said "250+ passing tests" against a suite of nearly twice that.
+
+    An understated count is still an unchecked number, and the next edit is as
+    likely to overstate it. The floor is the number of test functions defined,
+    which is below the collected count because parametrised cases expand — so
+    a README figure above it is a claim this file cannot support.
+    """
+    import re
+
+    defined = sum(
+        1 for path in TESTS
+        for node in ast.parse(path.read_text()).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+    )
+    readme = (ROOT / "README.md").read_text()
+    claimed = [int(m) for m in re.findall(r"(\d+)\+? passing tests", readme)]
+    assert claimed, "the README no longer states a test count"
+    for n in claimed:
+        assert n <= defined + 200, (
+            f"README claims {n} tests; only {defined} test functions are defined")
+        assert n >= defined, (
+            f"README claims {n} tests but {defined} test functions are defined — "
+            "an understated count rots the same way an overstated one does")

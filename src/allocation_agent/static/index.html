@@ -453,14 +453,21 @@ function clamp(el){
   if(String(v)!==el.value) el.value=v;
   return v;
 }
+// Rounding to whole seconds is fine on the hosted instance, where a run takes
+// four of them. Run the same page against a local instance and it is thirteen
+// times faster, so the honest estimate rounds to "About 0s" — a number that
+// reads as a bug rather than as speed. Below a second, say so in milliseconds.
+function howLong(secs){
+  return secs < 1 ? `${Math.max(10, Math.round(secs * 1000))}ms` : `${secs.toFixed(0)}s`;
+}
 function showEstimate(){
   const el=$('#estimate'); if(!el) return;
   const n=clamp($('#n')), r=rate();
   if(!r){ el.textContent=''; return; }
   const secs=n/r;
   el.innerHTML = OBSERVED_RATE
-    ? `About <b>${secs.toFixed(0)}s</b> — measured on your last run here.`
-    : `About <b>${secs.toFixed(0)}s</b> at ${fmt(r)} payments/sec on this instance. `
+    ? `About <b>${howLong(secs)}</b> — measured on your last run here.`
+    : `About <b>${howLong(secs)}</b> at ${fmt(r)} payments/sec on this instance. `
       + `The first run after a quiet spell also waits ~50s for it to wake.`;
 }
 

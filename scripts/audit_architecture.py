@@ -19,15 +19,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 os.environ.setdefault("ARTIFACTS_DIR", str(ROOT / "artifacts"))
 
-RESULTS: list[tuple[str, str, bool, str]] = []
+RESULTS: list[tuple[str, str, bool, str, str]] = []
 
 
-def check(stage: str, component: str, fn) -> None:
+def check(stage: str, component: str, fn, how: str = "ran") -> None:
+    """Record one component's answer.
+
+    *how* is the evidence, and it is printed, because the two kinds are not
+    worth the same. `ran` means a live request reached the component and it
+    answered. `source` means the file was read — which can show a call site
+    exists but never that anything took it, so a `source` row is a weaker
+    claim and says so instead of borrowing the credibility of the others.
+    """
     try:
         ok, note = fn()
     except Exception as exc:  # noqa: BLE001
         ok, note = False, f"{type(exc).__name__}: {exc}"
-    RESULTS.append((stage, component, bool(ok), note))
+    RESULTS.append((stage, component, bool(ok), how, note))
 
 
 def main() -> None:  # noqa: PLR0915
@@ -49,11 +57,11 @@ def main() -> None:  # noqa: PLR0915
 
     check("ingest", "eval.leakage", lambda: (
         "assert_no_leakage" in (ROOT / "scripts/train_ranker.py").read_text(),
-        "gates training; raises before a model reaches disk"))
+        "gates training; raises before a model reaches disk"), how="source")
 
     check("ingest", "eval.splits", lambda: (
         "temporal_split" in (ROOT / "scripts/train_ranker.py").read_text(),
-        "train/val/test are cut here"))
+        "train/val/test are cut here"), how="source")
 
     # -- match -------------------------------------------------------------- #
     run = client.post("/api/run", json={"limit": 300}).json()
@@ -88,7 +96,7 @@ def main() -> None:  # noqa: PLR0915
 
     check("decide", "decide.openrouter", lambda: (
         "OPENROUTER_API_KEY" in (ROOT / "src/allocation_agent/api.py").read_text(),
-        "opt-in: constructed only when a key is set"))
+        "opt-in: constructed only when a key is set"), how="source")
 
     # -- record ------------------------------------------------------------- #
     trail = client.get(f"/api/run/{run['run_id']}/audit").json()
@@ -100,25 +108,50 @@ def main() -> None:  # noqa: PLR0915
         trail["run"]["status"] == "completed", f"status={trail['run']['status']}"))
 
     # -- learn -------------------------------------------------------------- #
-    api_src = (ROOT / "src/allocation_agent/api.py").read_text()
+    # These two were grepped for in api.py until the grep started lying: the
+    # note read "offline only" on a row whose own verdict said yes, because
+    # /api/correct had since gone live and nothing here noticed. A string in a
+    # file is not an execution. So a correction is actually submitted, and the
+    # two components are judged on what comes back.
+    posted = next((d for d in trail["decisions"] if d["outcome"] == "post"), None)
+    correction = client.post("/api/correct", json={
+        "run_id": run["run_id"],
+        "record_id": posted["record_id"] if posted else "",
+        "correct_key": "a-key-blocking-never-offered",
+        "reviewer": "audit_architecture.py",
+    }) if posted else None
+
     check("learn", "learn.router", lambda: (
-        "learn.router" in api_src or "diagnose" in api_src,
-        "offline only: scripts/run_learning.py"))
+        correction is not None and correction.status_code == 200
+        and correction.json()["locus"] in {"blocking", "multiplicity",
+                                           "ranking", "threshold", "none"},
+        f"attributed a correction to {correction.json()['locus']}"
+        if correction is not None and correction.status_code == 200
+        else "no posted record to correct"))
+
     check("learn", "learn.casebase", lambda: (
-        "casebase" in api_src, "offline only, and unused even there"))
+        client.get("/api/cases").json()["n_cases"] > 0,
+        f"holds {client.get('/api/cases').json()['n_cases']} case(s); "
+        f"retrieve() is still called by nothing, so no decision consults one"))
+
+    api_src = (ROOT / "src/allocation_agent/api.py").read_text()
     check("learn", "learn.simulate", lambda: (
-        "simulate" in api_src, "offline only: scripts/run_learning.py"))
+        "simulate" in api_src, "offline only: scripts/run_learning.py"),
+        how="source")
     check("learn", "pipeline.run_batch", lambda: (
-        "run_batch" in api_src, "offline only: scripts/run_batch.py"))
+        "run_batch" in api_src, "offline only: scripts/run_batch.py"),
+        how="source")
 
     # -- report -------------------------------------------------------------- #
-    print(f"{'stage':<9}{'component':<28}{'on path':<9}note")
-    print("-" * 92)
-    dead = []
-    for stage, component, ok, note in RESULTS:
-        print(f"{stage:<9}{component:<28}{'yes' if ok else 'NO':<9}{note}")
+    print(f"{'stage':<9}{'component':<28}{'on path':<9}{'evidence':<10}note")
+    print("-" * 104)
+    dead, grepped = [], []
+    for stage, component, ok, how, note in RESULTS:
+        print(f"{stage:<9}{component:<28}{'yes' if ok else 'NO':<9}{how:<10}{note}")
         if not ok:
             dead.append(component)
+        elif how == "source":
+            grepped.append(component)
 
     print()
     if dead:
@@ -126,6 +159,9 @@ def main() -> None:  # noqa: PLR0915
         print("That is only a defect if the docs claim otherwise — check each one.")
     else:
         print("every component exercised by a live request")
+    if grepped:
+        print(f"{len(grepped)} answered by reading source, not by running: "
+              f"{', '.join(grepped)}")
 
 
 if __name__ == "__main__":

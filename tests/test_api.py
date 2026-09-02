@@ -850,6 +850,34 @@ def test_the_page_does_not_hardcode_a_throughput_figure(client):
     assert "free_tier_records_per_second" in page
 
 
+def test_the_estimate_never_rounds_a_fast_run_down_to_zero(client):
+    """`secs.toFixed(0)` rendered "About 0s" on any instance quicker than half
+    a second per batch.
+
+    It never showed on the hosted free tier, where 200 payments take four
+    seconds, so the defect was invisible exactly where the page was looked at.
+    Run the same page against a local instance -- 576 payments/sec measured
+    here -- and the second run onwards advertises "About 0s", which reads as a
+    broken number rather than a fast one.
+
+    This is a source contract, like the throughput test above: the estimate is
+    computed in the browser, so pytest cannot call it. What it pins is that a
+    sub-second branch exists and that the seconds template is not applied
+    unconditionally.
+    """
+    page = client.get("/").text
+    assert "function howLong" in page, "the sub-second branch is gone"
+    assert "secs < 1" in page, "howLong no longer distinguishes a sub-second run"
+    assert "ms`" in page, "howLong no longer has a milliseconds form"
+    # `${secs.toFixed(0)}s` is correct *inside* howLong -- that is its
+    # over-a-second branch. What must not come back is the estimate itself
+    # formatting seconds directly and skipping the branch.
+    assert "About <b>${secs.toFixed(0)}s</b>" not in page, (
+        "the estimate formats seconds directly again, so a fast run reads 0s")
+    assert page.count("${howLong(secs)}") == 2, (
+        "both estimate strings should go through howLong")
+
+
 def test_the_record_count_control_offers_the_whole_held_out_set(client):
     """Section 1 advertises 4,000 held-out records. Refusing to run more than
     half of them, with no sentence saying why, is worse than showing the cost."""
