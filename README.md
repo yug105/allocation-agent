@@ -9,7 +9,7 @@ Built for the **Razorpay Buildathon, Track 04 — AI Finance Controller**.
 - **The Hard Problem:** Captures 87% of many-to-one grouped settlements (the critical gap that incumbent rules-engines completely fail to automate).
 - **Agentic Learning Loop:** `/api/correct` is live: it attributes a reviewer's correction to the stage that caused it — blocking, multiplicity, ranking or threshold — because widening blocking cannot fix a ranking miss, and retains the case. The **71% cut in wrong auto-posts** is the offline retraining experiment in `scripts/run_learning.py`, run against its own controls; the live endpoint feeds that loop rather than closing it.
 - **Real AI Engineering:** Zero LLMs on the critical matching path — a LightGBM LambdaRank ranker over 12 features, scored in under a millisecond, with an isotonic calibrator turning its margin into a confidence that means something. LLMs are reserved for column mapping the regex misses, and for writing the explanation after the decision is made.
-- **Production Grade:** 494 passing tests, an append-only audit trail enforced by database triggers rather than convention, and every model failure degrading to human review instead of a 500.
+- **Production Grade:** 509 passing tests, an append-only audit trail enforced by database triggers rather than convention, and every model failure degrading to human review instead of a 500.
 
 ---
 
@@ -527,6 +527,28 @@ often than right.
 The shipped variant gives up 8pp of coverage to cut wrong answers by half. A
 credit it refuses goes to a reviewer; a credit it gets wrong balances the books
 against the wrong invoices, which is the more expensive of the two.
+
+**On an uploaded file the detector and the solver are joined up.** They were
+built separately and for a while stayed that way: `/api/reconcile` said "this
+looks like one payment covering several ledger entries" and stopped, even when
+the answer was two rows in a pool of three. Now a record routed as grouped goes
+on to the solver over its own blocked candidates, and the response names them:
+
+```
+20,000.00  =  INV-4474 UMBRELLA (12,000.00) + INV-4475 UMBRELLA (8,000.00)
+```
+
+**It stays a review item.** `matched_key` is null, `confidence` is null, the
+outcome is still `suspected_grouped`, and the page says *to confirm* rather
+than showing a percentage. A subset that balances is not proof it is the right
+subset — the table above is that lesson — so the split is working shown to a
+reviewer, not a posting. The response reports `groups_resolved` of
+`groups_found` as counts and no accuracy at all, because an uploaded file has
+no answer key.
+
+`/api/run` deliberately does not do this: it publishes the benchmark figures in
+this README, and they must not move because a different caller wanted more
+detail in its response.
 
 Split by how many payments the batch really had, that aggregate turns out to
 cover two different problems:

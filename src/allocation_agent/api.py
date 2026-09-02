@@ -90,6 +90,18 @@ MIN_FOR_RATES = 20
 # window would have silently disagreed with what the audit log claimed was used.
 BLOCKING = BlockingConfig(date_slack_days=7)
 
+# Uploaded files get the solver run over a grouped record's own candidates, so
+# "one payment covering several entries" comes back naming which ones. The
+# demo path deliberately does not: `/api/run` reports benchmark figures that a
+# reader can check against the README, and those must not move because an
+# unrelated caller wanted more detail in its response.
+#
+# `max_candidates` is lower than the settlement endpoint's 128 because these
+# are blocked candidates, not a settlement's pool -- a few dozen at most -- and
+# a wider pool would admit more coincidental sums than it recovers real ones.
+# `max_subset_size` stays at the measured 3.
+UPLOAD_SOLVER = SolverConfig(tolerance_minor=0, max_candidates=64)
+
 
 # An aging report needs a book that spans time. Measured on the held-out set:
 # it covers 27 days, every record lands in one 30-day bucket, and the auto-post
@@ -949,6 +961,7 @@ def create_app() -> FastAPI:
         summary = {"posted": 0, "queued": 0, "no_candidate": 0,
                    "suspected_grouped": 0, "unscorable": 0, "model_error": 0}
         unresolved: list[tuple[int, float]] = []
+        resolved: list[str] = []
         llm_before = narrator.calls
         results = []
         started = time.perf_counter()
@@ -972,13 +985,17 @@ def create_app() -> FastAPI:
                 r = _match_or_degrade(rec, index=index, key_stats=key_stats,
                                       models=state.models, gate=gate,
                                       mult_threshold=MULT_THRESHOLD, blocking=BLOCKING,
-                                      narrator=narrator, calibrated=False)
+                                      narrator=narrator, calibrated=False,
+                                      group_solver=UPLOAD_SOLVER)
                 audit.record(rec.record_id, r["decision"], keys=r["keys"],
                              n_candidates=r["n_candidates"], path=r["path"],
                              evidence=r["evidence"], run_id=run_id)
                 summary[r["outcome"]] += 1
                 if r["outcome"] != "posted" and rec.day is not None:
                     unresolved.append((rec.day, abs(rec.amount_minor) / 100))
+                proposal = r.get("proposal")
+                if proposal:
+                    resolved.append(rec.record_id)
                 results.append({
                     "record_id": rec.record_id,
                     "account": rec.account,
@@ -990,6 +1007,14 @@ def create_app() -> FastAPI:
                     "residual": round(r["residual_minor"] / 100, 2),
                     "residual_cause": r["residual_cause"],
                     "explanation": r["explanation"],
+                    # Present only on a grouped record whose members the solver
+                    # recovered uniquely. Never a match: `matched_key` stays
+                    # null and the record stays in the queue.
+                    "proposal": ({"keys": proposal["keys"],
+                                  "amounts": [round(a / 100, 2)
+                                              for a in proposal["amounts_minor"]],
+                                  "n_pool": proposal["n_pool"]}
+                                 if proposal else None),
                 })
 
         try:
@@ -1013,6 +1038,12 @@ def create_app() -> FastAPI:
             # the person who wrote it can catch a wrong guess.
             "date_layout": {"bank": bank_layout, "ledger": ledger_layout},
             "aging": _aging(unresolved, _span([r.day for r in records])),
+            # How much of the grouped queue came back with its members named.
+            # Reported as a count, never as an accuracy: an uploaded file has
+            # no answer key, so whether a split is *right* is the reviewer's
+            # call and any figure here would be invented.
+            "groups_resolved": len(resolved),
+            "groups_found": summary["suspected_grouped"],
             # Every confidence on this response was derived from measurements
             # taken on BenchRec. Sharing a code path does not transfer them.
             "confidence_validated_for_this_data": False,
@@ -1029,7 +1060,8 @@ def create_app() -> FastAPI:
 
 
 def _match_or_degrade(rec, *, index, key_stats, models, gate, mult_threshold,
-                      blocking, narrator, calibrated: bool) -> dict:
+                      blocking, narrator, calibrated: bool,
+                      group_solver=None) -> dict:
     """match_one, but a model failure becomes an exception rather than a 500.
 
     "The AI can fail, the payment system cannot" is the project's central
@@ -1040,7 +1072,8 @@ def _match_or_degrade(rec, *, index, key_stats, models, gate, mult_threshold,
         return match_one(rec, index=index, key_stats=key_stats, models=models,
                          gate=gate, mult_threshold=mult_threshold,
                          blocking=blocking, narrator=narrator,
-                         calibrated_for_this_data=calibrated)
+                         calibrated_for_this_data=calibrated,
+                         group_solver=group_solver)
     except Exception as exc:  # noqa: BLE001
         d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate,
                    absent=Absent.MODEL_ERROR)

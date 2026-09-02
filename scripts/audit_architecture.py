@@ -80,9 +80,25 @@ def main() -> None:  # noqa: PLR0915
         state.calibrator is not None and state.calibrator_kind != "none",
         f"{state.calibrator_kind}, loaded from the bundle"))
 
+    # Two reaches, and the second is the one that was missing: the solver was
+    # unreachable from an uploaded file, so a visitor got "this looks grouped"
+    # and never "here is which entries". Exercising both keeps that honest.
+    grouped_upload = client.post("/api/reconcile", files={
+        "bank": ("b.csv", io.BytesIO(
+            b"date,description,amount,account\n"
+            b"2026-03-05,UMBRELLA,20000.00,ACC-2\n"), "text/csv"),
+        "ledger": ("l.csv", io.BytesIO(
+            b"date,reference,amount,account\n"
+            b"2026-03-05,INV-1,12000.00,ACC-2\n"
+            b"2026-03-05,INV-2,8000.00,ACC-2\n"
+            b"2026-03-04,INV-3,975.25,ACC-2\n"), "text/csv"),
+    }).json()
+
     check("match", "match.solver", lambda: (
-        client.post("/api/settlements", json={"limit": 5}).status_code == 200,
-        "reached through /api/settlements"))
+        client.post("/api/settlements", json={"limit": 5}).status_code == 200
+        and grouped_upload.get("groups_resolved", 0) > 0,
+        f"/api/settlements, and {grouped_upload.get('groups_resolved')} of "
+        f"{grouped_upload.get('groups_found')} grouped credits named on an upload"))
 
     # -- decide ------------------------------------------------------------- #
     check("decide", "decide.gate", lambda: (

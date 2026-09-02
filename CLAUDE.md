@@ -79,11 +79,33 @@ The four stages, in order, each able to end the record:
 Then `decide/gate.py` compares confidence to a bar that **rises with the
 amount**, and every decision is appended to `report/audit.py`.
 
-**The solver is a separate problem** (`match/solver.py`), reached through
-`/api/settlements`, not through `_match_one`. Given a credit and ~100 candidate
+**The solver** (`match/solver.py`). Given a credit and a pool of candidate
 payments it recovers the subset — cardinality-layered bitset DP, smallest
 subset wins, and a second subset of the same size makes it `AMBIGUOUS` rather
 than picking. Ties and oversized pools are refused, not guessed.
+
+Three callers, and the difference between them is the point:
+
+* `/api/settlements` and `/api/connect` run it over a settlement's own pool.
+* `match_one` runs it over a *grouped record's blocked candidates*, but only
+  when the caller passes `group_solver` — `/api/reconcile` does, `/api/run`
+  does not. The demo path publishes figures a reader checks against the
+  README; those must not move because an unrelated caller wanted more detail.
+
+**A recovered split is evidence, never a posting.** `_resolve_group` runs
+*after* the routing decision and cannot change it: `outcome` stays
+`suspected_grouped`, `keys` stays empty, `confidence` stays `None`, and the
+record stays in the queue. A balancing subset is not proof of membership — on a
+pool of ~100 this project measured 51.3% of them to be the wrong set — so the
+answer is attached as working-out for a reviewer to confirm. A solver that
+raises is recorded in `evidence["resolution_failed"]` and swallowed, for the
+same reason narration's failure is: an explanation must not take a decision
+down with it.
+
+Its pool is one entry per `(key, amount)`. Two ledger rows sharing a key *and*
+an amount collapse, because `KeyStats.amounts` is a set — so a credit covering
+two identical invoices under one reference reports no answer rather than a
+wrong one.
 
 **The hero renders before any click.** `/api/overview` serves
 `artifacts/overview.json`, precomputed over the whole held-out set by

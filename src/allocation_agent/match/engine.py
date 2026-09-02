@@ -24,6 +24,11 @@ from allocation_agent.decide.narrate import Narrator, diagnose_residual
 from allocation_agent.match.blocker import BlockingConfig, block
 from allocation_agent.match.features import featurise
 from allocation_agent.match.multiplicity import featurise_multiplicity
+from allocation_agent.match.solver import (
+    SolverConfig,
+    SolverStatus,
+    solve_subset,
+)
 from allocation_agent.types import BankRecord
 
 # Taking the lone exact-amount candidate is right 98.98% of the time on the
@@ -84,15 +89,93 @@ class Models:
     calibrator_kind: str = "none"
 
 
+def _money(minor: int) -> str:
+    return f"{minor / 100:,.2f}"
+
+
+def _resolve_group(rec: BankRecord, usable: list[str], key_stats,
+                   config: SolverConfig | None,
+                   evidence: dict) -> tuple[dict | None, str]:
+    """Say *which* ledger entries make up a credit already routed as grouped.
+
+    The detector's answer is "several entries"; this turns it into names. It
+    runs after the routing decision and cannot change it — a subset that
+    balances is not proof it is the right subset, and on a pool of ~100 this
+    project measured 51.3% of balancing subsets to be the wrong set. So the
+    result is attached to the review item as working-out, and the record stays
+    in the queue for a person either way.
+
+    A failure here is recorded and swallowed, for the same reason narration's
+    is: an explanation that breaks must not take a decision down with it.
+
+    The pool is one entry per (key, amount). Two rows sharing a key *and* an
+    amount collapse into one, because `KeyStats.amounts` is a set — so a credit
+    covering two identical invoices under one reference will not resolve. It
+    reports no answer rather than a wrong one, which is the right failure.
+    """
+    if config is None:
+        return None, "Sent for review."
+
+    pool = sorted((k, a) for k in usable for a in key_stats[k].amounts)
+    try:
+        result = solve_subset(
+            target_minor=rec.amount_minor,
+            candidates_minor=[a for _, a in pool],
+            config=config,
+        )
+    except Exception as exc:  # noqa: BLE001 -- resolution must not unmake a decision
+        evidence["resolution_failed"] = True
+        evidence["resolution_error"] = f"{type(exc).__name__}: {exc}"
+        return None, "Sent for review."
+
+    evidence["resolution"] = result.status.value
+
+    # Every figure below is one the record or its candidates already carry.
+    # An earlier draft wrote "no combination of 3 entries or fewer", and
+    # `validate_numbers`' live counterpart caught it: `max_subset_size` is a
+    # policy constant, not a fact about this payment, and a reader has no way
+    # to check a number the payload does not contain.
+    if result.status is SolverStatus.SOLVED and result.indices:
+        picked = [pool[i] for i in result.indices]
+        named = " and ".join(f"{k} ({_money(a)})" for k, a in picked)
+        return (
+            {"keys": [k for k, _ in picked],
+             "amounts_minor": [a for _, a in picked],
+             "n_pool": len(pool)},
+            f"These add up to it exactly: {named}. "
+            f"Confirm the split before it is posted.",
+        )
+
+    if result.status is SolverStatus.AMBIGUOUS:
+        return None, ("More than one combination of these entries adds up to "
+                      "this credit, so none is offered — the amounts alone do "
+                      "not say which. Sent for review.")
+
+    if result.status is SolverStatus.TOO_LARGE:
+        return None, ("There are more candidate entries here than the solver "
+                      "will search over, so no split is claimed. "
+                      "Sent for review.")
+
+    return None, ("No small combination of these entries adds up to it, so "
+                  "which ones it covers is left to a person.")
+
+
 def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
               mult_threshold: float, blocking: BlockingConfig,
               narrator: Narrator | None = None,
-              calibrated_for_this_data: bool = False) -> dict:
+              calibrated_for_this_data: bool = False,
+              group_solver: SolverConfig | None = None) -> dict:
     """Run one record through the whole matching path.
 
     Extracted so an uploaded file goes through *identical* code to the demo. A
     separate path for user data would make the demo's numbers evidence for
     nothing but the demo.
+
+    *group_solver*, when given, lets a record routed as grouped go on to say
+    **which** entries make it up. It is opt-in because turning it on changes
+    what the response carries, and `/api/run` reports measured benchmark
+    figures that must not move because an unrelated caller wanted more detail.
+    It never changes the outcome: see `_resolve_group`.
     """
     cands = sorted(block(rec, index, blocking))
 
@@ -135,12 +218,17 @@ def match_one(rec: BankRecord, *, index, key_stats, models: Models, gate,
     if p_mult >= mult_threshold and not lone_exact:
         d = decide(confidence=None, amount_minor=rec.amount_minor, config=gate,
                    absent=Absent.SUSPECTED_GROUPED)
+        evidence: dict = {"p_multiple": round(p_mult, 4)}
+        head = (f"This looks like one payment covering several ledger entries "
+                f"({p_mult:.0%} confidence), so a single match would be wrong.")
+
+        proposal, tail = _resolve_group(rec, usable, key_stats, group_solver, evidence)
+
         return {"residual_cause": None, "residual_minor": 0, "stage": "grouping", "outcome": "suspected_grouped", "decision": d,
                 "keys": [], "n_blocked": len(cands), "n_scored": len(usable), "n_candidates": len(cands), "path": "multiplicity",
-                "evidence": {"p_multiple": round(p_mult, 4)}, "confidence": None,
-                "explanation": f"This looks like one payment covering several ledger "
-                               f"entries ({p_mult:.0%} confidence), so a single match "
-                               f"would be wrong. Sent for review."}
+                "evidence": evidence, "confidence": None,
+                "proposal": proposal,
+                "explanation": f"{head} {tail}"}
 
     # 2. Rank. Confidence is the gap between first and second place.
     X = np.vstack([featurise(rec, key_stats[k], n_candidates=len(usable)) for k in usable])

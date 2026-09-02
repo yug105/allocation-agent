@@ -8,4 +8,4 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
-artifacts/runs.db
+artifacts/*.db

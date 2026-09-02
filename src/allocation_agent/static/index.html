@@ -785,6 +785,15 @@ $('#ugo').onclick=()=>{
 $('#usample').onclick=()=>reconcile(new Blob([SAMPLE.bank],{type:'text/csv'}),
                                     new Blob([SAMPLE.ledger],{type:'text/csv'}), $('#usample'));
 
+// A grouped credit has no single match and never gets one, so the column
+// shows the recovered split instead of an em-dash. Purple, not green: green is
+// "posted", and a split is a proposal a person still has to confirm.
+function matchedCell(r){
+  if(r.matched_key) return esc(r.matched_key);
+  if(!r.proposal) return '—';
+  return r.proposal.keys.map((k,i)=>
+    `${esc(k)} <span class=faint>${money(r.proposal.amounts[i])}</span>`).join(' + ');
+}
 function renderUpload(d){
   const s=d.summary;
   pipeline(s, d.n_records);
@@ -794,6 +803,8 @@ function renderUpload(d){
     <div class=card><div class=v>${fmt(d.n_ledger_rows)}</div><div class=l>ledger rows read</div></div>
     <div class=card><div class="v g">${fmt(s.posted)}</div><div class=l>matched confidently</div></div>
     <div class=card><div class="v y">${fmt(s.queued+s.suspected_grouped)}</div><div class=l>needs a person</div></div>
+    ${d.groups_found ? `<div class=card><div class="v p">${fmt(d.groups_resolved)} of ${fmt(d.groups_found)}</div>
+      <div class=l>grouped credits whose entries were recovered</div></div>` : ''}
   </div>
   <p class=note>${esc(d.caveat)}</p>
   <p class=faint>Dates read as <b>${esc(d.date_layout.bank)}</b> in the bank file and
@@ -803,8 +814,8 @@ function renderUpload(d){
   <tr><th>record</th><th class=n>amount</th><th>matched to</th><th class=n>confidence</th><th>what happened</th></tr>
   ${d.results.slice(0,200).map(r=>`<tr>
     <td class=id>${esc(r.record_id)}</td><td class=n>${money(r.amount)}</td>
-    <td class="${r.matched_key?'g':'faint'}">${r.matched_key?esc(r.matched_key):'—'}</td>
-    <td class=n>${r.confidence!=null?pct(r.confidence):'—'}</td>
+    <td class="${r.matched_key?'g':(r.proposal?'p':'faint')}">${matchedCell(r)}</td>
+    <td class=n>${r.confidence!=null?pct(r.confidence):(r.proposal?'to confirm':'—')}</td>
     <td>${esc(r.explanation)}</td></tr>`).join('')}
   </table></div>`;
 }
