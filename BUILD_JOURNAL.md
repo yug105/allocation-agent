@@ -1518,11 +1518,11 @@ to where it can be checked, then check it.
 
 ## Writing the rules down, then making something check them
 
-The repo had no `CLAUDE.md`, no linter in the loop, and no gate on committing.
+The repo had no written rules, no linter in the loop, and no gate on committing.
 Every defect in the entries above was a claim enforced by nothing, so the
 correction is not another document — it is machinery.
 
-**`CLAUDE.md`** now carries the rules that were being re-derived every session,
+**The contributor rules** now carry what was being re-derived every session,
 each with the failure that earned it: one owner per number, assert on exact
 strings rather than substrings, sample by position never by outcome, report
 coverage and precision separately, refuse rather than guess.
@@ -1977,7 +1977,7 @@ learn    router, casebase, simulate, run_batch             OFFLINE
 ```
 
 Thirteen of seventeen exercised by a request. The four that are not are exactly
-the ones the README and CLAUDE.md already label offline, so the documents and
+the ones the README already labels offline, so the documents and
 the running system agree — which is the whole point of running it. It stays in
 the repo so the next component added has something that will notice if it is
 never wired in.

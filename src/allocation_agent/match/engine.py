@@ -7,9 +7,9 @@ check still able to overrule an exact amount, and a record that could leave the
 audit trail entirely. A reviewer found eight defects in that file; all eight
 were fixes that existed here and had never been carried across.
 
-So it lives in one place now, and both callers import it. The rule in
-CLAUDE.md — *one matching path, two callers* — was true of the API and false of
-the repo.
+So it lives in one place now, and every caller imports it. *One matching path,
+three callers* was true of the API and false of the repo; keeping it true is the
+reason this module exists.
 """
 
 from __future__ import annotations
